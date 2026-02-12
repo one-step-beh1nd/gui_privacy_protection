@@ -1,6 +1,6 @@
-# GUI Privacy Protection — AndroidLab Variants
+# Anonymization-Enhanced Privacy Protection for Mobile GUI Agents: Available but Invisible
 
-This repository contains two variants of the [AndroidLab](https://arxiv.org/abs/2410.24024) framework for training and benchmarking Android autonomous agents, used for experiments involving GUI privacy protection.
+This repository contains two variants of the [AndroidLab](https://arxiv.org/abs/2410.24024) framework for training and benchmarking Android autonomous agents, plus a **PrivScreen** evaluation pipeline for reproducing privacy protection experiments.
 
 ---
 
@@ -10,9 +10,11 @@ This repository contains two variants of the [AndroidLab](https://arxiv.org/abs/
 |-----------|-------------|
 | **[AndLab_baseline](AndLab_baseline/)** | Original AndroidLab baseline with minor run-parameter adjustments. Use this for standard benchmarking without privacy protection. |
 | **[AndLab_protected](AndLab_protected/)** | Extends AndLab_baseline with an end-to-end **privacy protection layer**. Sensitive information (PII) is anonymized before data is sent to cloud-based GUI agents. Use this when you need privacy-preserving evaluation. |
+| **[PrivScreen_evaluation](PrivScreen_evaluation/)** | Full pipeline for processing the **PrivScreen** dataset with PrivacyProtectionLayer and evaluating privacy leakage. Use this to reproduce VQA-based privacy protection experiments. |
 
 - **AndLab_baseline**: The Android-Lab baseline framework with only some run-parameter modifications (e.g. unified `generate_result.py` usage, corrected `--task_id` format). No change to the core agent or pipeline.
 - **AndLab_protected**: Built on AndLab_baseline; adds the privacy protection layer. See [AndLab_protected/PRIVACY_PROTECTION_LAYER_DOCUMENTATION.md](AndLab_protected/PRIVACY_PROTECTION_LAYER_DOCUMENTATION.md) for full documentation.
+- **PrivScreen_evaluation**: Downloads PrivScreen from HuggingFace, anonymizes screenshots with PrivacyProtectionLayer (OCR + NER + masking), and runs VQA evaluation to compute privacy leakage rate, normal QA accuracy, BERTScore/BLEU/ROUGE-L, etc. Depends on AndLab_protected for the privacy protection module.
 
 ---
 
@@ -71,6 +73,25 @@ Full commands and options: [AndLab_baseline/README.md](AndLab_baseline/README.md
 2. **Generate results**: Same `generate_result.py` interface as baseline (see above).
 
 Full commands and privacy layer details: [AndLab_protected/README.md](AndLab_protected/README.md).
+
+### PrivScreen_evaluation
+
+Three-step pipeline to reproduce PrivScreen privacy protection evaluation:
+
+1. **Download dataset** (from `PrivScreen_evaluation/`):
+   ```bash
+   python download_dataset.py --target ./data
+   ```
+2. **Anonymize** with PrivacyProtectionLayer:
+   ```bash
+   python anonymize_dataset.py --source ./data/privscreen --output ./data_anonymized/privscreen
+   ```
+3. **Evaluate** the anonymized data:
+   ```bash
+   python eval_original.py --data-root ./data_anonymized/privscreen --output ./eval_results/anonymized.json
+   ```
+
+Full workflow, arguments, and dependencies: [PrivScreen_evaluation/README.md](PrivScreen_evaluation/README.md).
 
 ---
 
