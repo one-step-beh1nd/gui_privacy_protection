@@ -119,21 +119,6 @@ For gpt-4o with OpenAI’s default endpoint, you can omit `--api_key` and `--api
 ---
 
 ## Citation
-
-**AndroidLab (baseline):**
-
-```bibtex
-@misc{xu2024androidlabtrainingsystematicbenchmarking,
-      title={AndroidLab: Training and Systematic Benchmarking of Android Autonomous Agents},
-      author={Yifan Xu and Xiao Liu and Xueqiao Sun and Siyi Cheng and Hao Yu and Hanyu Lai and Shudan Zhang and Dan Zhang and Jie Tang and Yuxiao Dong},
-      year={2024},
-      eprint={2410.24024},
-      archivePrefix={arXiv},
-      primaryClass={cs.AI},
-      url={https://arxiv.org/abs/2410.24024},
-}
-```
-
 **Privacy-protected variant (AndLab_protected):**
 
 ```bibtex
