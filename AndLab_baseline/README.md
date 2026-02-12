@@ -74,40 +74,59 @@ If you use Docker on Linux (x86_64), please refer to [here](docs/prepare_for_lin
 To test, run:
 
 ```bash
-python eval.py -n test_name -c your path to config.yaml
+python eval.py -n test_name -c /path/to/config.yaml
 ```
+
+（若配置文件路径包含空格，请用引号包裹，例如：`-c "your path to config.yaml"`）
 
 The specific output of each question is saved under `./logs/evaluation/test_name`, and the evaluation results are saved
 in the `output` folder.
 If you only want to run a few questions for testing, you can refer to:
 
 ```bash
-python eval.py -n test_name -c your path to config.yaml --task_id taskid_1,taskid_2,taskid_3
+python eval.py -n test_name -c /path/to/config.yaml --task_id taskid_1 taskid_2 taskid_3
 ```
+
+（`--task_id` 接受多个 ID，用空格分隔。）
 
 We support parallel testing. Please note that you need to confirm in advance that
 you have sufficient memory and storage. Each concurrent session takes up approximately 6G of memory and 9G of storage
 space.
 
 ```bash
-python eval.py -n test_name -c your path to config.yaml -p 3
+python eval.py -n test_name -c /path/to/config.yaml -p 3
 ```
 
 The corresponding task_id for each question can be found in `evaluation/config`.
 
-Use the following code to generate evaluation results:
+## Generating Evaluation Results
+
+Supported `--judge_model` values: `glm4` or `gpt-4o`. The `--target_dirs` argument accepts one or more space-separated directory names under `--input_folder`.
 
 ```bash
-# eval by gpt-4o-2024-05-13:
-export OPENAI_API_KEY='your-api-key-here'
-python generate_result.py --input_folder ./logs/evaluation/ --output_folder ./logs/evaluation/ --output_excel ./logs/evaluation/test_name.xlsx --judge_model gpt-4o-2024-05-13
-
-# eval by glm4:
-python generate_result.py --input_folder ./logs/evaluation/ --output_folder ./logs/evaluation/ --output_excel ./logs/evaluation/test_name.xlsx --judge_model glm4 --api_key your api key
+python generate_result.py \
+  --input_folder ./logs/evaluation \
+  --output_folder ./outputs \
+  --output_excel ./outputs/[output file name].xlsx \
+  --judge_model [glm4|gpt-4o] \
+  --api_key [api key] \
+  --api_base [base url] \
+  --target_dirs [dir1] [dir2] ...
 ```
 
-You need to fill in your judge model and api_key(may be api_base, too). We now support gpt-4o-2024-05-13 and glm4.
-generate_result.py will generate an Excel file of all test results under --input_ir, containing detailed results for each question.
+Example (using gpt-4o):
+
+```bash
+python generate_result.py \
+  --input_folder ./logs/evaluation \
+  --output_folder ./outputs \
+  --output_excel ./outputs/paper_xml.xlsx \
+  --judge_model gpt-4o \
+  --api_key your-api-key \
+  --target_dirs paper_xml
+```
+
+For gpt-4o with OpenAI's default endpoint, you can omit `--api_key` and `--api_base` if `OPENAI_API_KEY` is set in the environment.
 
 If you want to do further development based on Androidlab, including changing the agent's base model, adding tasks, and changing the AVD image, please refer to:[here](docs/modify_androidlab.md)
 
