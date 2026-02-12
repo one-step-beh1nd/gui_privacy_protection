@@ -4,8 +4,6 @@ A privacy-protected variant of [AndroidLab](https://arxiv.org/abs/2410.24024) th
 
 For detailed documentation on the privacy protection layer, see [PRIVACY_PROTECTION_LAYER_DOCUMENTATION.md](PRIVACY_PROTECTION_LAYER_DOCUMENTATION.md).
 
-Chinese version of this README is available [here](README_CN.md).
-
 ---
 
 # Quick Start
