@@ -106,32 +106,32 @@ class OriginalEvaluator:
     Use for data under data_anonymized (already processed).
     """
     
-    def __init__(self, config, llm_model="gpt-4o-mini", normal_judge: str = "rule",
-                 use_api: bool = False, api_type: str = None, api_key: str = None,
-                 api_model: str = None, api_base_url: str = None,
-                 llm_api_key: str = None, llm_base_url: str = None):
+    def __init__(self, config, extractor_model="gpt-4o-mini", normal_judge: str = "rule",
+                 use_api: bool = False, vqa_api_type: str = None, vqa_api_key: str = None,
+                 vqa_model: str = None, vqa_base_url: str = None,
+                 extractor_api_key: str = None, extractor_base_url: str = None):
         self.config = config
         self.device = torch.device(config.device if torch.cuda.is_available() else "cpu")
         self.normal_judge = normal_judge  # 'rule' | 'gpt' | 'both'
         self.use_api = use_api
 
         self.llm_extractor = LLMFieldExtractor(
-            model_name=llm_model,
-            api_key=llm_api_key,
-            base_url=llm_base_url
+            model_name=extractor_model,
+            api_key=extractor_api_key,
+            base_url=extractor_base_url
         )
-        print(f"LLM field extraction enabled: model={llm_model}")
-        if llm_base_url:
-            print(f"LLM Base URL: {llm_base_url}")
+        print(f"LLM field extraction enabled: model={extractor_model}")
+        if extractor_base_url:
+            print(f"Extractor Base URL: {extractor_base_url}")
         print("Note: this evaluator adds no perturbation; it evaluates raw/processed images directly.")
         
         if self.use_api:
-            print(f"Using API for evaluation: {api_type} - {api_model or 'default model'}")
+            print(f"Using API for VQA evaluation: {vqa_api_type} - {vqa_model or 'default model'}")
             self.api_client = APIClient(
-                api_type=api_type or "openai",
-                api_key=api_key,
-                model_name=api_model,
-                base_url=api_base_url
+                api_type=vqa_api_type or "openai",
+                api_key=vqa_api_key,
+                model_name=vqa_model,
+                base_url=vqa_base_url
             )
             self.model = None
             self.processor = None
@@ -759,17 +759,21 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Evaluate raw/processed images (no perturbation) for PrivScreen reproduction")
     parser.add_argument('--output', type=str, default='./eval_results/original.json', help='Output JSON path')
-    parser.add_argument('--llm-model', type=str, default='gpt-4o-mini', help='LLM model name')
-    parser.add_argument('--normal-judge', type=str, default='rule', choices=['rule','gpt','both'], help='Normal QA judgment: rule, gpt, or both')
-    parser.add_argument('--app', type=str, default=None, help='Evaluate only this app name')
     parser.add_argument('--data-root', type=str, default=None, help='Dataset root (e.g. ./data_anonymized/privscreen)')
-    parser.add_argument('--use-api', action='store_true', help='Use API as surrogate model')
-    parser.add_argument('--api-type', type=str, default='openai', choices=['openai','gemini','openrouter','qwen'], help='API provider')
-    parser.add_argument('--api-key', type=str, default=None, help='API Key')
-    parser.add_argument('--api-model', type=str, default=None, help='API model name')
-    parser.add_argument('--api-base-url', type=str, default=None, help='API Base URL')
-    parser.add_argument('--llm-api-key', type=str, default=None, help='LLM field extractor API Key')
-    parser.add_argument('--llm-base-url', type=str, default=None, help='LLM Base URL')
+    parser.add_argument('--app', type=str, default=None, help='Evaluate only this app name')
+    parser.add_argument('--normal-judge', type=str, default='rule', choices=['rule','gpt','both'], help='Normal QA judgment: rule, gpt, or both')
+    
+    # VQA Model (for answering questions)
+    parser.add_argument('--use-api', action='store_true', help='Use API as VQA surrogate model (instead of local MLLM)')
+    parser.add_argument('--vqa-api-type', type=str, default='openai', choices=['openai','gemini','openrouter','qwen'], help='VQA API provider')
+    parser.add_argument('--vqa-api-key', type=str, default=None, help='VQA API Key (for surrogate model)')
+    parser.add_argument('--vqa-model', type=str, default=None, help='VQA API model name')
+    parser.add_argument('--vqa-base-url', type=str, default=None, help='VQA API Base URL')
+    
+    # Field Extractor Model (for extracting structured fields from text)
+    parser.add_argument('--extractor-model', type=str, default='gpt-4o-mini', help='Field extractor model name')
+    parser.add_argument('--extractor-api-key', type=str, default=None, help='Field extractor API Key')
+    parser.add_argument('--extractor-base-url', type=str, default=None, help='Field extractor Base URL')
     args = parser.parse_args()
     
     config = Config()
@@ -812,15 +816,15 @@ def main():
     
     evaluator = OriginalEvaluator(
         config=config,
-        llm_model=args.llm_model,
+        extractor_model=args.extractor_model,
         normal_judge=args.normal_judge,
         use_api=args.use_api,
-        api_type=args.api_type if args.use_api else None,
-        api_key=args.api_key,
-        api_model=args.api_model,
-        api_base_url=args.api_base_url,
-        llm_api_key=args.llm_api_key,
-        llm_base_url=args.llm_base_url
+        vqa_api_type=args.vqa_api_type if args.use_api else None,
+        vqa_api_key=args.vqa_api_key,
+        vqa_model=args.vqa_model,
+        vqa_base_url=args.vqa_base_url,
+        extractor_api_key=args.extractor_api_key,
+        extractor_base_url=args.extractor_base_url
     )
     print(f"Results will be saved to: {args.output}")
     results = evaluator.evaluate(dataset, output_path=args.output)

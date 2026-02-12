@@ -61,10 +61,20 @@ Common arguments:
 
 - `--data-root`: Dataset root (**must** point to anonymization output, e.g. `./data_anonymized/privscreen`).
 - `--output`: Path for the result JSON.
-- `--llm-model`: LLM used for field extraction (default `gpt-4o-mini`). Set `OPENAI_API_KEY` or pass `--llm-api-key`.
-- `--use-api`: Use API as surrogate VQA model (otherwise uses local MLLM from config).
-- `--api-type`, `--api-model`, `--api-key`: API provider and model (e.g. OpenAI / Gemini / OpenRouter).
 - `--app`: Evaluate only the given app (e.g. `amazon`); omit to evaluate all.
+- `--normal-judge`: Normal QA judgment method: `rule`, `gpt`, or `both`.
+
+**Field Extractor (for extracting structured fields from text):**
+- `--extractor-model`: Model name for field extraction (default `gpt-4o-mini`).
+- `--extractor-api-key`: API key for field extractor (or set `OPENAI_API_KEY` env variable).
+- `--extractor-base-url`: Custom base URL for field extractor API.
+
+**VQA Model (for answering questions about images):**
+- `--use-api`: Use API as surrogate VQA model (otherwise uses local MLLM from config).
+- `--vqa-api-type`: VQA API provider (`openai`, `gemini`, `openrouter`, `qwen`).
+- `--vqa-api-key`: API key for VQA model.
+- `--vqa-model`: VQA API model name.
+- `--vqa-base-url`: Custom base URL for VQA API.
 
 Results include: average field match score, Leakage Rate, Response Rate, BERTScore/BLEU/ROUGE-L, Normal QA accuracy, etc.
 
@@ -86,4 +96,6 @@ For a detailed map of which code does what, see **CODE_MAP.md**.
 
 - Step 2 depends on the parent directory’s `AndLab_protected` (`utils_mobile.privacy_protection`). Do not move this directory outside the repo without it.
 - For local MLLM evaluation, set `surrogate_model_name` in `config.py` and ensure enough GPU/RAM; or use `--use-api` to avoid loading a large local model.
-- LLM field extraction and (optional) GPT judgment require an OpenAI-compatible API; configure via environment variables or `--llm-api-key` / `--llm-base-url`. Do not hardcode tokens in code.
+- Field extraction requires an OpenAI-compatible API; configure via environment variables or `--extractor-api-key` / `--extractor-base-url`.
+- VQA API evaluation (when using `--use-api`) requires appropriate credentials; configure via `--vqa-api-key` / `--vqa-base-url`.
+- Do not hardcode tokens in code.
