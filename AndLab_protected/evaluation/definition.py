@@ -1,9 +1,13 @@
 import sys
 import re
 import os
+import base64
+import backoff
 from openai import OpenAI
-from zhipuai import ZhipuAI
-from agent import *
+try:
+    from zhipuai import ZhipuAI
+except ImportError:
+    ZhipuAI = None
 from utils_mobile.and_controller import AndroidController, list_all_devices
 from utils_mobile.utils import print_with_color
 
@@ -51,8 +55,13 @@ def detect_answer(question: str, model_answer: str, standard_answer: str, args):
         call_time += 1
         if args.judge_model == "glm4":
             return_message = get_completion_glm(prompt=detect_prompt, glm4_key=args.api_key)
-        elif "gpt" in args.judge_model:
-            return_message = get_completion_gpt(prompt=detect_prompt, model_name = args.judge_model, api_key=getattr(args, 'api_key', None), api_base=getattr(args, 'api_base', None))
+        else:
+            return_message = get_completion_gpt(
+                prompt=detect_prompt,
+                model_name=args.judge_model,
+                api_key=getattr(args, 'api_key', None),
+                api_base=getattr(args, 'api_base', None),
+            )
         if "True" in return_message:
             return True
         elif "False" in return_message:
@@ -67,11 +76,13 @@ def detect_answer_test(args):
         return_message = None
         if args.judge_model == "glm4":
             return_message = get_completion_glm(prompt=detect_prompt, glm4_key=args.api_key)
-        elif "gpt" in args.judge_model:
-            return_message = get_completion_gpt(prompt=detect_prompt, model_name = args.judge_model, api_key=getattr(args, 'api_key', None), api_base=getattr(args, 'api_base', None))
         else:
-            print("ERROR: No model found!")
-            sys.exit()
+            return_message = get_completion_gpt(
+                prompt=detect_prompt,
+                model_name=args.judge_model,
+                api_key=getattr(args, 'api_key', None),
+                api_base=getattr(args, 'api_base', None),
+            )
         print("Here is the judge_model test: ")
         print("Question: ", detect_prompt)
         print("Model Answer: ", return_message)
@@ -88,6 +99,8 @@ def detect_answer_test(args):
                       on_backoff=handle_backoff,  # 指定重试时的回调函数
                       giveup=handle_giveup)  # 指定放弃重试时的回调函数
 def get_completion_glm(prompt, glm4_key):
+    if ZhipuAI is None:
+        raise ImportError("zhipuai is required when judge_model is glm4")
     client = ZhipuAI(api_key=glm4_key)
     response = client.chat.completions.create(
         model="glm-4",  # 填写需要调用的模型名称
@@ -173,8 +186,8 @@ Answer with ONLY [True] or [False]. Do not provide any explanation."""
             if args.judge_model == "glm4":
                 # GLM4 可能不支持vision，这里先尝试文本判断
                 return_message = get_completion_glm(prompt=judge_prompt, glm4_key=args.api_key)
-            elif "gpt" in args.judge_model:
-                # 使用支持vision的GPT模型
+            else:
+                # 使用 OpenAI 兼容的多模态 chat completions 接口
                 api_key = getattr(args, 'api_key', None)
                 api_base = getattr(args, 'api_base', None)
                 if api_key == "":
@@ -209,9 +222,6 @@ Answer with ONLY [True] or [False]. Do not provide any explanation."""
                     temperature=0.001
                 )
                 return_message = r.choices[0].message.content
-            else:
-                print(f"Warning: Unsupported judge model for vision: {args.judge_model}")
-                return False
             
             if "True" in return_message:
                 return True

@@ -56,3 +56,6 @@ AppAgent/apps/*
 *.log
 %local%*
 *.xlsx
+debug.md
+
+configs/1*.yaml

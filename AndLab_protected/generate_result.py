@@ -153,7 +153,6 @@ def parse_args():
 
 def main():
     args = parse_args()
-    assert args.judge_model in ["glm4", "gpt-4o"], "We only support glm4 or gpt-4o for judge model"
     detect_answer_test(args)
     task_yamls = os.listdir('evaluation/config')
     task_yamls = ["evaluation/config/" + i for i in task_yamls if i.endswith(".yaml")]
