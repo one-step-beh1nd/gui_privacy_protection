@@ -1,9 +1,11 @@
 from collections import defaultdict
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, Optional, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any
 from tqdm import tqdm
 import json
+import os
+import re
 import jsonlines
 import numpy as np
 from PIL import Image
@@ -17,6 +19,8 @@ from utils_mobile.privacy_protection import get_privacy_layer
 T_INPUT = TypeVar('T_INPUT')
 T_OUTPUT = TypeVar('T_OUTPUT')
 T_TARGET = TypeVar('T_TARGET')
+
+TOKEN_PATTERN = re.compile(r"\[?([A-Z_]+#[A-Za-z0-9]+)\]?")
 
 
 
@@ -65,6 +69,73 @@ def deanonymize_xml_tree(xml_tree, token_mapping):
         return result
     else:
         return xml_tree
+
+
+def load_task_token_mapping(task_trace_root: str) -> Dict[str, str]:
+    """
+    Load task-scoped token mapping even if the privacy layer is not currently enabled.
+    """
+    privacy_layer = get_privacy_layer()
+    token_mapping_loaded = privacy_layer.load_token_mapping(task_trace_root)
+    if token_mapping_loaded and privacy_layer.token_to_real:
+        return privacy_layer.token_to_real.copy()
+
+    mapping_file = os.path.join(task_trace_root, "privacy_token_mapping.json")
+    if not os.path.exists(mapping_file):
+        return {}
+
+    try:
+        with open(mapping_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        token_to_real = data.get("token_to_real", {})
+        if isinstance(token_to_real, dict):
+            return {
+                token: real_value
+                for token, real_value in token_to_real.items()
+                if isinstance(token, str) and isinstance(real_value, str)
+            }
+    except Exception:
+        return {}
+
+    return {}
+
+
+def deanonymize_text_content(text: Any, token_mapping: Optional[Dict[str, str]] = None) -> Any:
+    """
+    Replace anonymized tokens in free-form text with real values.
+    Handles both `TOKEN#abc12` and `[TOKEN#abc12]` forms.
+    """
+    if not isinstance(text, str):
+        return text
+
+    result = text
+    mapping = token_mapping or {}
+
+    sorted_items = sorted(mapping.items(), key=lambda x: len(x[0]), reverse=True)
+    for token, real_value in sorted_items:
+        if not isinstance(token, str) or not isinstance(real_value, str):
+            continue
+        result = result.replace(f"[{token}]", real_value)
+        result = result.replace(token, real_value)
+
+    privacy_layer = get_privacy_layer()
+    if getattr(privacy_layer, "token_to_real", None):
+        result = privacy_layer.convert_token_to_real(result)
+
+    def replace_unresolved(match):
+        token = match.group(1)
+        real_value = mapping.get(token)
+        if real_value is None and getattr(privacy_layer, "token_to_real", None):
+            real_value = privacy_layer.token_to_real.get(token)
+        return real_value if isinstance(real_value, str) else match.group(0)
+
+    return TOKEN_PATTERN.sub(replace_unresolved, result)
+
+
+def extract_unresolved_tokens(text: Any) -> List[str]:
+    if not isinstance(text, str):
+        return []
+    return sorted(set(match.group(1) for match in TOKEN_PATTERN.finditer(text)))
 
 
 def calculate_partial_acc(dict):
@@ -168,18 +239,12 @@ class Evaluation_Task(Generic[T_INPUT, T_OUTPUT, T_TARGET]):
         # Each task has its own token mapping because the same real value may be
         # anonymized to different tokens in different tasks
         # IMPORTANT: Copy mapping to local variable to avoid race conditions in concurrent evaluation
-        privacy_layer = get_privacy_layer()
         task_trace_root = self.traces[task_id]['trace_root']
-        token_mapping_loaded = privacy_layer.load_token_mapping(task_trace_root)
-        
-        # Copy mapping to local variables to avoid race conditions when evaluating tasks concurrently
-        # The mapping will be used in check_answer() via the metric instance
-        local_token_to_real = privacy_layer.token_to_real.copy() if token_mapping_loaded else {}
-        local_real_to_token = privacy_layer.real_to_token.copy() if token_mapping_loaded else {}
+        local_token_to_real = load_task_token_mapping(task_trace_root)
         
         # Store mapping in metric instance so check_answer can use it
         # This avoids race conditions when multiple tasks evaluate concurrently
-        if token_mapping_loaded:
+        if local_token_to_real:
             metric.token_mapping = local_token_to_real
         else:
             metric.token_mapping = None
@@ -276,7 +341,8 @@ class Evaluation_Task(Generic[T_INPUT, T_OUTPUT, T_TARGET]):
         self.save_single(task, final_result)
         
         # Clear token mapping after evaluation to avoid mixing mappings from different tasks
-        if token_mapping_loaded:
+        if local_token_to_real:
+            privacy_layer = get_privacy_layer()
             privacy_layer.token_to_real.clear()
             privacy_layer.real_to_token.clear()
 
@@ -435,27 +501,11 @@ class SingleTask():
                 model_answer = line["parsed_action"]["kwargs"]["message"]
             else:
                 model_answer = line["parsed_action"]["input"]
-            
-            # Convert anonymized tokens back to real values for evaluation
-            # This is important for query_detect tasks where the agent may return
-            # anonymized labels (e.g., phone_number#2qtrnssn#v20d) but the golden answer
-            # is the real value (e.g., "22331144 or (223) 311-44")
-            # Also need to convert tokens in question if it contains anonymized values
-            # Use task-specific mapping if available (for concurrent evaluation safety)
-            if hasattr(self, 'token_mapping') and self.token_mapping is not None:
-                # Use task-specific mapping copy to avoid race conditions
-                for token, real_value in sorted(self.token_mapping.items(), key=lambda x: len(x[0]), reverse=True):
-                    if isinstance(token, str) and isinstance(real_value, str):
-                        model_answer = model_answer.replace(token, real_value)
-                        question = question.replace(token, real_value)  # Also convert tokens in question
-            else:
-                # Fall back to global privacy layer (for backward compatibility)
-                privacy_layer = get_privacy_layer()
-                if privacy_layer.enabled:
-                    model_answer = privacy_layer.convert_token_to_real(model_answer)
-                    question = privacy_layer.convert_token_to_real(question)  # Also convert tokens in question
-            
-            ground_truth = self.final_ground_truth
+
+            question = deanonymize_text_content(question, getattr(self, 'token_mapping', None))
+            model_answer = deanonymize_text_content(model_answer, getattr(self, 'token_mapping', None))
+            ground_truth = deanonymize_text_content(self.final_ground_truth, getattr(self, 'token_mapping', None))
+
             if detect_answer(question, model_answer, ground_truth, self.args):
                 return True
             else:

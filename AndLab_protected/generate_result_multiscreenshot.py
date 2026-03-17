@@ -1,17 +1,23 @@
 import argparse
-import concurrent.futures
 import datetime
 import json
 import os
 import threading
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import jsonlines
 
 from evaluation.configs import AppConfig
-from evaluation.definition import detect_answer_test
+from evaluation.definition import detect_answer_test, detect_answer_with_details
 from evaluation.multiscreenshot_judge import judge_complete_with_multiscreenshot
-from evaluation.task import Evaluation_Task, deanonymize_xml_tree, dump_xml
+from evaluation.task import (
+    Evaluation_Task,
+    deanonymize_text_content,
+    deanonymize_xml_tree,
+    dump_xml,
+    extract_unresolved_tokens,
+    load_task_token_mapping,
+)
 from generate_result import find_all_task_files, find_all_traces_files
 from recalculate_metrics import calculate_average_metrics
 from utils_mobile.privacy_protection import get_privacy_layer
@@ -45,6 +51,19 @@ def parse_args():
         type=int,
         default=20,
         help="单次发给模型的最大图片数；默认 20，避免把 25 张图写死到接口限制里",
+    )
+    parser.add_argument(
+        "--max_workers",
+        type=int,
+        default=1,
+        help="评估并行度，默认 1 表示串行",
+    )
+    parser.add_argument(
+        "--evaluate_metric_type",
+        type=str,
+        choices=["both", "operation", "query_detect"],
+        default="both",
+        help="选择要评估的 metric_type；默认 both 表示两种都评估",
     )
     return parser.parse_args()
 
@@ -112,6 +131,69 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
             "needs_manual_review": result.get("needs_manual_review", False),
         }
 
+    def _should_evaluate_metric_type(self, metric_type: str) -> bool:
+        selected = getattr(self.args, "evaluate_metric_type", "both")
+        return selected == "both" or selected == metric_type
+
+    @staticmethod
+    def _is_finish_line(line: Optional[Dict[str, Any]]) -> bool:
+        if not line:
+            return False
+        parsed_action = line.get("parsed_action", {})
+        return parsed_action.get("action") == "finish" or parsed_action.get("type") == "finish"
+
+    @staticmethod
+    def _build_query_detect_judge_details(
+        metric,
+        line: Optional[Dict[str, Any]],
+        args,
+    ) -> Optional[Dict[str, Any]]:
+        if line is None:
+            return None
+        parsed_action = line.get("parsed_action", {})
+        if parsed_action.get("action") != "finish" and parsed_action.get("type") != "finish":
+            return None
+        if getattr(metric, "final_ground_truth", None) is None:
+            return None
+
+        try:
+            question = line["target"]
+            if "kwargs" in parsed_action:
+                model_answer = parsed_action["kwargs"]["message"]
+            else:
+                model_answer = parsed_action["input"]
+
+            question = deanonymize_text_content(question, getattr(metric, "token_mapping", None))
+            model_answer = deanonymize_text_content(model_answer, getattr(metric, "token_mapping", None))
+            ground_truth = deanonymize_text_content(metric.final_ground_truth, getattr(metric, "token_mapping", None))
+            judge_details = detect_answer_with_details(question, model_answer, ground_truth, args)
+            unresolved_tokens = {
+                "question": extract_unresolved_tokens(question),
+                "model_answer": extract_unresolved_tokens(model_answer),
+                "standard_answer": extract_unresolved_tokens(ground_truth),
+            }
+            return {
+                "query_detect_judge_prompt": judge_details.get("judge_prompt"),
+                "query_detect_judge_response": judge_details.get("judge_response"),
+                "query_detect_judge_reason": judge_details.get("judge_reason"),
+                "query_detect_judge_question": question,
+                "query_detect_judge_model_answer": model_answer,
+                "query_detect_judge_standard_answer": ground_truth,
+                "query_detect_judge_complete": judge_details.get("complete"),
+                "query_detect_unresolved_tokens": unresolved_tokens,
+            }
+        except Exception as exc:
+            return {
+                "query_detect_judge_prompt": None,
+                "query_detect_judge_response": None,
+                "query_detect_judge_question": None,
+                "query_detect_judge_model_answer": None,
+                "query_detect_judge_standard_answer": getattr(metric, "final_ground_truth", None),
+                "query_detect_judge_complete": None,
+                "query_detect_unresolved_tokens": None,
+                "query_detect_judge_error": str(exc),
+            }
+
     def save_single(self, task, result):
         save_dir = self.config.output_dir
         output_dict = {
@@ -142,6 +224,9 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
             return
 
         task_id = task.get("task_id")
+        metric_type = self.config.metrics_type[task_id]
+        if not self._should_evaluate_metric_type(metric_type):
+            return
         metric = self.metrics[task_id](self.args)
         metric.token_mapping = None
         final_result = {"complete": False}
@@ -153,17 +238,16 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
         if not os.path.exists(self.traces[task_id]["trace_file"]):
             return
 
-        privacy_layer = get_privacy_layer()
         task_trace_root = self.traces[task_id]["trace_root"]
-        token_mapping_loaded = privacy_layer.load_token_mapping(task_trace_root)
-        local_token_to_real = privacy_layer.token_to_real.copy() if token_mapping_loaded else {}
-        if token_mapping_loaded:
+        local_token_to_real = load_task_token_mapping(task_trace_root)
+        if local_token_to_real:
             metric.token_mapping = local_token_to_real
 
         all_operation_trace = []
         original_task_prompt = None
         last_action = None
         last_action_context = None
+        final_result_line = None
         num_repeat = 0
 
         with jsonlines.open(self.traces[task_id]["trace_file"]) as reader:
@@ -189,8 +273,24 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
                     xml_path = line["ac_xml"]
                 xml_path = os.path.join(self.traces[task_id]["xml_path"], xml_path.split("/")[-1])
 
+                if line.get("parsed_action"):
+                    last_action_context = {
+                        "parsed_action": line.get("parsed_action"),
+                        "current_response": line.get("current_response"),
+                    }
+
                 if not os.path.exists(xml_path):
                     print(f"XML file not found: {xml_path}")
+                    if metric_type == "query_detect" and self._is_finish_line(line):
+                        try:
+                            result = metric.judge(None, line)
+                            all_operation_trace.append(line)
+                            if "judge_page" in result.keys() and not result.get("judge_page"):
+                                continue
+                            final_result = result
+                            final_result_line = line
+                        except Exception:
+                            pass
                     continue
 
                 xml_compressed = dump_xml(xml_path)
@@ -201,15 +301,10 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
                     result = metric.judge(xml_compressed, line)
                     all_operation_trace.append(line)
 
-                    if line.get("parsed_action"):
-                        last_action_context = {
-                            "parsed_action": line.get("parsed_action"),
-                            "current_response": line.get("current_response"),
-                        }
-
                     if "judge_page" in result.keys() and not result.get("judge_page"):
                         continue
                     final_result = result
+                    final_result_line = line
                 except Exception:
                     pass
 
@@ -227,37 +322,43 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
             seen_images.add(image_path)
             ordered_images.append(image_path)
 
-        rule_result = dict(final_result)
-        rule_complete = rule_result.get("complete", False)
-        vision_result = judge_complete_with_multiscreenshot(
-            image_paths=ordered_images,
-            task_prompt=original_task_prompt,
-            rule_result=rule_result,
-            final_action=last_action_context,
-            args=self.args,
-        )
+        if metric_type == "operation":
+            rule_result = dict(final_result)
+            rule_complete = rule_result.get("complete", False)
+            vision_result = judge_complete_with_multiscreenshot(
+                image_paths=ordered_images,
+                task_prompt=original_task_prompt,
+                rule_result=rule_result,
+                final_action=last_action_context,
+                args=self.args,
+            )
 
-        final_result["rule_complete_before_vision"] = rule_complete
-        final_result["complete"] = vision_result.get("complete")
-        for key, value in vision_result.items():
-            if key == "complete":
-                continue
-            final_result[key] = value
+            final_result["rule_complete_before_vision"] = rule_complete
+            final_result["complete"] = vision_result.get("complete")
+            for key, value in vision_result.items():
+                if key == "complete":
+                    continue
+                final_result[key] = value
+        elif metric_type == "query_detect":
+            query_detect_judge_details = self._build_query_detect_judge_details(metric, final_result_line, self.args)
+            if query_detect_judge_details is not None:
+                final_result.update(query_detect_judge_details)
 
         if self.show_detail_metrics:
             self.add_metrics(task, all_operation_trace, before_images, final_result)
 
         self.save_single(task, final_result)
 
-        if token_mapping_loaded:
+        if local_token_to_real:
+            privacy_layer = get_privacy_layer()
             privacy_layer.token_to_real.clear()
             privacy_layer.real_to_token.clear()
 
 
-def evaluate_all_tasks(tasks: List[Evaluation_Task]):
+def evaluate_all_tasks(tasks: List[Evaluation_Task], max_workers: int):
     for task in tasks:
         try:
-            task.evaluate()
+            task.evaluate(max_workers=max_workers)
             del task
         except Exception as exc:
             import traceback
@@ -283,7 +384,7 @@ def evaluate_input_dir(input_dir, task_yamls, create_time, args):
         tasks.append(app_task)
     print(f"> Successfully load {len(tasks)} task{'s' if len(tasks) > 1 else ''}")
 
-    evaluate_all_tasks(tasks)
+    evaluate_all_tasks(tasks, max_workers=max(1, args.max_workers))
 
     total_jsonl_path = os.path.join(output_root_dir, "total.jsonl")
     if os.path.exists(total_jsonl_path):
@@ -335,18 +436,8 @@ def main():
             continue
         filtered_input_dirs.append(input_dir)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [
-            executor.submit(evaluate_input_dir, input_dir, task_yamls, create_time, args)
-            for input_dir in filtered_input_dirs
-        ]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                future.result()
-            except Exception as exc:
-                import traceback
-                traceback.print_exc()
-                print(f"Generated an exception: {exc}")
+    for input_dir in filtered_input_dirs:
+        evaluate_input_dir(input_dir, task_yamls, create_time, args)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import sys
 import re
 import os
+import json
 import base64
 import backoff
 from openai import OpenAI
@@ -48,9 +49,43 @@ def handle_giveup(details):
 
 
 def detect_answer(question: str, model_answer: str, standard_answer: str, args):
-    # print(f"Question: {question}\nModel Answer: {model_answer}\nStandard Answer: {standard_answer}")
-    detect_prompt = f"You need to judge the model answer is True or False based on Standard Answer we provided. You should whether answer [True] or [False]. \n\nQuestion: {question}\n\nModel Answer: {model_answer}\n\nStandard Answer: {standard_answer}"
+    result = detect_answer_with_details(question, model_answer, standard_answer, args)
+    return result["complete"]
+
+
+def build_detect_answer_prompt(question: str, model_answer: str, standard_answer: str) -> str:
+    return (
+        "You are grading whether the model answer is semantically correct for the user's question. "
+        "The standard answer is a reference meaning, not a required exact string match. "
+        "Accept paraphrases, equivalent explanations, longer answers, and yes/no answers that clearly imply the same meaning as the reference answer. "
+        "Mark the answer incorrect only if it contradicts the reference meaning, answers a different question, or misses the key conclusion. "
+        "For yes/no reference answers, decide based on the final meaning of the model answer, not whether it literally says Yes or No. "
+        "If the reference answer is 'No', then explanations like 'not every day', 'turned off', 'not enabled', or other negative conclusions should usually be treated as correct when they answer the same question. "
+        "Focus on the final conclusion that answers the question, not on intermediate details that may still be mentioned in the explanation.\n\n"
+        "Examples:\n"
+        "- Question: Is there an alarm set on 4PM everyday?\n"
+        "- Reference Answer: No\n"
+        "- Model Answer: There is an alarm at 4 PM on some weekdays, but not every day.\n"
+        "- This should be graded as correct because the final conclusion is 'not every day', which matches 'No'.\n\n"
+        "- Question: Have my alarm at 9AM been turned on?\n"
+        "- Reference Answer: No\n"
+        "- Model Answer: The 9 AM alarm is turned off.\n"
+        "- This should be graded as correct because 'turned off' means the answer to the question is No.\n\n"
+        f"Question:\n{question}\n\n"
+        f"Model Answer:\n{model_answer}\n\n"
+        f"Reference Answer:\n{standard_answer}\n\n"
+        "Return strict JSON only with this schema:\n"
+        "{\n"
+        '  "correct": true,\n'
+        '  "reason": "short explanation"\n'
+        "}"
+    )
+
+
+def detect_answer_with_details(question: str, model_answer: str, standard_answer: str, args):
+    detect_prompt = build_detect_answer_prompt(question, model_answer, standard_answer)
     call_time = 0
+    last_response = None
     while call_time <= 5:
         call_time += 1
         if args.judge_model == "glm4":
@@ -62,10 +97,53 @@ def detect_answer(question: str, model_answer: str, standard_answer: str, args):
                 api_key=getattr(args, 'api_key', None),
                 api_base=getattr(args, 'api_base', None),
             )
-        if "True" in return_message:
-            return True
-        elif "False" in return_message:
-            return False
+        last_response = return_message
+        parsed_correct = None
+        parsed_reason = None
+        try:
+            response_text = return_message.strip()
+            if response_text.startswith("```"):
+                match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", response_text, flags=re.DOTALL)
+                if match:
+                    response_text = match.group(1).strip()
+            try:
+                payload = json.loads(response_text)
+            except json.JSONDecodeError:
+                match = re.search(r"\{.*\}", response_text, flags=re.DOTALL)
+                payload = json.loads(match.group(0)) if match else None
+            if isinstance(payload, dict):
+                parsed_correct = payload.get("correct")
+                parsed_reason = payload.get("reason")
+        except Exception:
+            parsed_correct = None
+
+        if isinstance(parsed_correct, bool):
+            return {
+                "complete": parsed_correct,
+                "judge_prompt": detect_prompt,
+                "judge_response": return_message,
+                "judge_reason": parsed_reason,
+            }
+        if "correct" in return_message.lower() and "incorrect" not in return_message.lower():
+            return {
+                "complete": True,
+                "judge_prompt": detect_prompt,
+                "judge_response": return_message,
+                "judge_reason": parsed_reason,
+            }
+        if "incorrect" in return_message.lower():
+            return {
+                "complete": False,
+                "judge_prompt": detect_prompt,
+                "judge_response": return_message,
+                "judge_reason": parsed_reason,
+            }
+    return {
+        "complete": False,
+        "judge_prompt": detect_prompt,
+        "judge_response": last_response,
+        "judge_reason": None,
+    }
 
 def detect_answer_test(args):
     # print(f"Question: {question}\nModel Answer: {model_answer}\nStandard Answer: {standard_answer}")
