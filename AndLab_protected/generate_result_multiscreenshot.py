@@ -1,3 +1,43 @@
+"""
+Multi-screenshot evaluator for AndLab task results.
+
+This script extends the original result generation flow with two behaviors:
+1. `operation` tasks can use multi-screenshot LLM judging to overwrite `complete`.
+2. `query_detect` tasks keep the original text-answer judging logic, but also
+   record the judge prompt / response / reason into the output result.
+
+Common usage:
+    python generate_result_multiscreenshot.py \
+      --input_folder logs/evaluation \
+      --target_dirs test_gliner \
+      --judge_model Qwen3-VL-235B-A22B-Thinking \
+      --api_base https://your-openai-compatible-endpoint/v1 \
+      --api_key <your-api-key> \
+      --max_workers 8 \
+      --evaluate_metric_type both
+
+Important arguments:
+    --input_folder
+        Evaluation log root produced by `eval.py`.
+    --output_folder
+        Directory where new `results.jsonl` / `total.jsonl` will be written.
+    --target_dirs
+        One or more run directory names under `input_folder`.
+    --judge_model
+        Judge model name. Supports OpenAI-compatible third-party endpoints.
+    --api_base / --api_key
+        Base URL and key for the judge model endpoint.
+    --vision_mode
+        How `operation` tasks use screenshots:
+        `auto` / `multiscreenshot` / `per_image`.
+    --max_images_per_request
+        Upper bound of images sent in a single vision request.
+    --max_workers
+        Task evaluation parallelism. Default is 1, which is serial.
+    --evaluate_metric_type
+        Which task type to evaluate: `both`, `operation`, or `query_detect`.
+"""
+
 import argparse
 import datetime
 import json
@@ -25,45 +65,87 @@ from utils_mobile.privacy_protection import get_privacy_layer
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="使用多张 before/end 截图 + 任务描述 + 规则结果来重新评估 complete 字段，支持 OpenAI 兼容接口的第三方 LLM"
+        description="使用多张 before/end 截图 + 任务描述 + 规则结果来重新评估 complete 字段，支持 OpenAI 兼容接口的第三方 LLM",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "示例:\n"
+            "  python generate_result_multiscreenshot.py \\\n"
+            "    --input_folder logs/evaluation \\\n"
+            "    --target_dirs test_gliner \\\n"
+            "    --judge_model Qwen3-VL-235B-A22B-Thinking \\\n"
+            "    --api_base https://your-openai-compatible-endpoint/v1 \\\n"
+            "    --api_key <your-api-key> \\\n"
+            "    --max_workers 8 \\\n"
+            "    --evaluate_metric_type both"
+        ),
     )
-    parser.add_argument("--input_folder", type=str, default="logs/evaluation")
-    parser.add_argument("--output_folder", type=str, default="outputs")
-    parser.add_argument("--judge_model", type=str, default="gpt-4o")
-    parser.add_argument("--api_base", type=str, default="")
-    parser.add_argument("--api_key", type=str, default="")
+    parser.add_argument(
+        "--input_folder",
+        type=str,
+        default="logs/evaluation",
+        help="`eval.py` 生成的运行日志根目录",
+    )
+    parser.add_argument(
+        "--output_folder",
+        type=str,
+        default="outputs",
+        help="评估结果输出目录；会在其中新建 `<run_name>_multiscreenshot_<time>` 子目录",
+    )
+    parser.add_argument(
+        "--judge_model",
+        type=str,
+        default="gpt-4o",
+        help="用于 query_detect 判题和 operation 多图判定的 judge model 名称",
+    )
+    parser.add_argument(
+        "--api_base",
+        type=str,
+        default="",
+        help="OpenAI 兼容接口的 base URL；第三方服务通常需要写到 `/v1`",
+    )
+    parser.add_argument(
+        "--api_key",
+        type=str,
+        default="",
+        help="Judge model 的 API key",
+    )
     parser.add_argument(
         "--target_dirs",
         type=str,
         nargs="+",
         default=None,
-        help="只评估指定的运行目录名",
+        help="只评估指定的运行目录名；不传则扫描 input_folder 下全部目录",
     )
     parser.add_argument(
         "--vision_mode",
         type=str,
         choices=["auto", "multiscreenshot", "per_image"],
         default="auto",
-        help="auto: 先尝试多图/分批，再回退逐图；multiscreenshot: 只用多图链路；per_image: 直接逐图判断",
+        help=(
+            "operation 任务的截图判定模式:\n"
+            "auto: 先尝试多图/分批，再回退逐图\n"
+            "multiscreenshot: 只用多图链路\n"
+            "per_image: 直接逐图判断"
+        ),
     )
     parser.add_argument(
         "--max_images_per_request",
         type=int,
         default=20,
-        help="单次发给模型的最大图片数；默认 20，避免把 25 张图写死到接口限制里",
+        help="单次发给视觉模型的最大图片数；默认 20，避免把 25 张图写死到接口限制里",
     )
     parser.add_argument(
         "--max_workers",
         type=int,
         default=1,
-        help="评估并行度，默认 1 表示串行",
+        help="单个运行目录内的任务评估并行度；默认 1 表示串行",
     )
     parser.add_argument(
         "--evaluate_metric_type",
         type=str,
         choices=["both", "operation", "query_detect"],
         default="both",
-        help="选择要评估的 metric_type；默认 both 表示两种都评估",
+        help="选择要评估的 metric_type；默认 both 表示 operation 和 query_detect 都评估",
     )
     return parser.parse_args()
 
