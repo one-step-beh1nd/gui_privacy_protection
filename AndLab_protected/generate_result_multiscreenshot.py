@@ -5,7 +5,8 @@ This script extends the original result generation flow with two behaviors:
 1. `operation` tasks can send the last N chronological before/end screenshots
    to a vision model in one request and overwrite `complete`.
 2. `query_detect` tasks keep the original text-answer judging logic, but also
-   record the judge prompt / response / reason into the output result.
+   use the LLM judge result to overwrite `complete`, while also recording
+   the judge prompt / response / reason into the output result.
 
 Common usage:
     python generate_result_multiscreenshot.py \
@@ -26,10 +27,8 @@ Important arguments:
         Directory where new `results.jsonl` / `total.jsonl` will be written.
     --target_dirs
         One or more run directory names under `input_folder`.
-    --judge_model
-        Fallback judge model name used by both task types unless a type-specific model is provided.
     --operation_judge_model / --query_judge_model
-        Optional type-specific judge model names for `operation` and `query_detect`.
+        Type-specific judge model names for `operation` and `query_detect`.
     --api_base / --api_key
         Shared base URL and key for all judge model requests.
     --tail_image_count
@@ -96,22 +95,16 @@ def parse_args():
         help="评估结果输出目录；会在其中新建 `<run_name>_multiscreenshot_<time>` 子目录",
     )
     parser.add_argument(
-        "--judge_model",
-        type=str,
-        default="gpt-4o",
-        help="默认 judge model；若未提供按类别区分的模型，则 operation 和 query_detect 都使用它",
-    )
-    parser.add_argument(
         "--operation_judge_model",
         type=str,
         default="",
-        help="operation 多图判定使用的 judge model；不传则回退到 --judge_model",
+        help="operation 多图判定使用的 judge model",
     )
     parser.add_argument(
         "--query_judge_model",
         type=str,
         default="",
-        help="query_detect 判题使用的 judge model；不传则回退到 --judge_model",
+        help="query_detect 判题使用的 judge model",
     )
     parser.add_argument(
         "--api_base",
@@ -160,10 +153,25 @@ def _build_args_with_judge_model(args, judge_model: str):
 
 def _get_judge_model_for_metric_type(args, metric_type: str) -> str:
     if metric_type == "operation":
-        return getattr(args, "operation_judge_model", "") or args.judge_model
+        return getattr(args, "operation_judge_model", "")
     if metric_type == "query_detect":
-        return getattr(args, "query_judge_model", "") or args.judge_model
-    return args.judge_model
+        return getattr(args, "query_judge_model", "")
+    return ""
+
+
+def _validate_args(args):
+    metric_type = getattr(args, "evaluate_metric_type", "both")
+    missing = []
+    if metric_type in {"both", "operation"} and not getattr(args, "operation_judge_model", ""):
+        missing.append("--operation_judge_model")
+    if metric_type in {"both", "query_detect"} and not getattr(args, "query_judge_model", ""):
+        missing.append("--query_judge_model")
+
+    if missing:
+        raise ValueError(
+            "Missing required judge model arguments for the selected metric type: "
+            + ", ".join(missing)
+        )
 
 
 class MultiScreenshotEvaluationTask(Evaluation_Task):
@@ -442,9 +450,14 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
                     continue
                 final_result[key] = value
         elif metric_type == "query_detect":
+            rule_complete = final_result.get("complete", False)
             query_detect_judge_details = self._build_query_detect_judge_details(metric, final_result_line, judge_args)
             if query_detect_judge_details is not None:
                 final_result.update(query_detect_judge_details)
+                final_result["rule_complete_before_llm"] = rule_complete
+                judge_complete = query_detect_judge_details.get("query_detect_judge_complete")
+                if isinstance(judge_complete, bool):
+                    final_result["complete"] = judge_complete
 
         if self.show_detail_metrics:
             self.add_metrics(task, all_operation_trace, before_images, final_result)
@@ -513,6 +526,7 @@ def evaluate_input_dir(input_dir, task_yamls, create_time, args):
 
 def main():
     args = parse_args()
+    _validate_args(args)
     query_test_args = _build_args_with_judge_model(
         args, _get_judge_model_for_metric_type(args, "query_detect")
     )

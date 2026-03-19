@@ -34,7 +34,9 @@ TASK_ID_EXTRA_PROMPTS: Dict[str, str] = {
         "'The Wall', 'Dark Side Of The Moon', 'Comfortably Numb', and 'Wish You Were Here'. "
         "If any one or more of these songs are missing from the final sorted list, you must "
         "judge the task as a failure even if the visible ordering appears correct."
-    )
+    ),
+
+    "zoom_2": "For this task, when setting the name to 'Alice', the name field must contain only 'Alice' and must not include any additional content. Otherwise, the task should be directly judged as a failure.",
 }
 
 
@@ -186,7 +188,10 @@ def _build_operation_prompt(
         "You will receive multiple screenshots from the SAME task execution.\n"
         "These screenshots are already sorted in chronological order from earlier to later.\n"
         "The first image is earlier in the execution process, and the last image is the latest one.\n"
-        "Please judge the final task outcome based on the full ordered screenshot sequence.\n\n"
+        "Please judge the final task outcome based on the full ordered screenshot sequence.\n"
+        "For creation-type tasks, duplicate creation counts as failure. If the screenshots show "
+        "that any required object, such as a record, event, contact, or similar item, was created "
+        "more times than required by the task, you must judge the task as a failure.\n\n"
         "Task-specific extra reminder:\n"
         f"{extra_prompt_block}\n\n"
         "Image order:\n"
