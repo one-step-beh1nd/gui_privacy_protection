@@ -1,4 +1,5 @@
 import datetime
+import os
 import time
 from evaluation.configs import TaskConfig
 from evaluation.docker_utils import create_docker_container, execute_command_in_container, remove_docker_container, \
@@ -11,6 +12,18 @@ from recorder import JSONRecorder
 from templates import *
 from templates.packages import find_package
 from utils_mobile.privacy_protection import get_privacy_layer
+
+# Privacy ablation: fixed placeholder "[Privacy Information]" instead of TYPE#hash in UI/XML/screenshots.
+# Set env before launch: PRIVACY_REPLACEMENT_STYLE=fixed_placeholder
+# See PRIVACY_PROTECTION_LAYER_DOCUMENTATION.md — Fixed placeholder mode (ablation).
+if (os.environ.get("PRIVACY_REPLACEMENT_STYLE") or "").strip().lower() in (
+    "fixed_placeholder",
+    "placeholder",
+    "fixed",
+):
+    from utils_mobile.privacy_protection import PrivacyProtectionLayer, set_privacy_layer
+
+    set_privacy_layer(PrivacyProtectionLayer(enabled=True, replacement_style="fixed_placeholder"))
 
 
 class Instance():

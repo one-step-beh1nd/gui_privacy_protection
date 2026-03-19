@@ -31,6 +31,7 @@ class DetectionMixin:
     - real_to_token: Dict[str, str]
     - real_to_entity_type: Dict[str, str]
     - whitelist: set
+    - _format_masked_surface(internal_token: str, wrap_token: bool) -> str  (from PrivacyProtectionLayer)
     """
 
     # ------------------------------------------------------------------ #
@@ -414,7 +415,7 @@ class DetectionMixin:
                 new_tokens[token] = real_value
             
             parts.append(text[cursor:start])
-            formatted_token = f"[{token}]" if wrap_token else token
+            formatted_token = self._format_masked_surface(token, wrap_token)
             parts.append(formatted_token)
             tokens_used.append(token)
             cursor = end

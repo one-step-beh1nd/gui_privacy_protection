@@ -11,6 +11,8 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
+from .constants import PII_FIXED_PLACEHOLDER
+
 
 class StatsMixin:
     """
@@ -24,6 +26,7 @@ class StatsMixin:
     - real_to_token: Dict[str, str]
     - real_to_entity_type: Dict[str, str]
     - whitelist: set
+    - replacement_style: str (optional; defaults handled via getattr when saving)
     """
 
     def _record_statistics(self, type: str, original_length: int, anonymized_chars_count: int, num_tokens: int):
@@ -106,13 +109,16 @@ class StatsMixin:
         
         mapping_file = os.path.join(self._task_dir, "privacy_token_mapping.json")
         try:
+            payload: Dict[str, Any] = {
+                "task_dir": self._task_dir,
+                "token_to_real": self.token_to_real,
+                "real_to_token": self.real_to_token,
+                "real_to_entity_type": self.real_to_entity_type,
+                "replacement_style": getattr(self, "replacement_style", "hash_token"),
+                "fixed_placeholder_literal": PII_FIXED_PLACEHOLDER,
+            }
             with open(mapping_file, 'w', encoding='utf-8') as f:
-                json.dump({
-                    "task_dir": self._task_dir,
-                    "token_to_real": self.token_to_real,
-                    "real_to_token": self.real_to_token,
-                    "real_to_entity_type": self.real_to_entity_type
-                }, f, ensure_ascii=False, indent=2)
+                json.dump(payload, f, ensure_ascii=False, indent=2)
             print(f"[PrivacyProtection] Token mapping saved to {mapping_file}")
         except Exception as e:
             print(f"[PrivacyProtection] Failed to save token mapping: {e}")

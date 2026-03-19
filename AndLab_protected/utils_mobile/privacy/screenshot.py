@@ -46,6 +46,7 @@ class ScreenshotMixin:
     - _find_registered_entities_in_text(text) -> List[...]
     - _is_in_whitelist(text) -> bool
     - _get_or_create_token(real_value, category, override_type) -> Tuple[str, bool]
+    - _format_masked_surface(internal_token: str, wrap_token: bool) -> str
     - _record_statistics(type, original_length, anonymized_chars_count, num_tokens)
     """
 
@@ -428,7 +429,7 @@ class ScreenshotMixin:
                     
                     anonymized_chars_count += len(real_value)
                     parts.append(original_text[cursor:rel_start])
-                    formatted_token = f"[{token}]"
+                    formatted_token = self._format_masked_surface(token, wrap_token=True)
                     parts.append(formatted_token)
                     cursor = rel_end
                 

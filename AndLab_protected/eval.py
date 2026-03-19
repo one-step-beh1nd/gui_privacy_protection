@@ -1,5 +1,10 @@
 import os
+
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+
+# 隐私消融：占位符 "[Privacy Information]"（非 TYPE#hash）。恢复默认 token 模式请注释掉下一行。
+os.environ["PRIVACY_REPLACEMENT_STYLE"] = "fixed_placeholder"
+
 import argparse
 import yaml
 import json

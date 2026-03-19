@@ -14,9 +14,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, List, Optional, Tuple
+import os
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from .constants import _HASH_ALPHABET, GLINER_DETECTION_THRESHOLD
+from .constants import (
+    _HASH_ALPHABET,
+    GLINER_DETECTION_THRESHOLD,
+    PII_FIXED_PLACEHOLDER,
+)
 from .local_llm import _run_local_llm
 from .detection import DetectionMixin
 from .screenshot import ScreenshotMixin
@@ -28,14 +33,22 @@ class PrivacyProtectionLayer(DetectionMixin, ScreenshotMixin, StatsMixin):
     Privacy protection layer that masks sensitive information and manages token mapping.
     """
 
-    def __init__(self, enabled: bool = True):
+    def __init__(
+        self,
+        enabled: bool = True,
+        replacement_style: Literal["hash_token", "fixed_placeholder"] = "hash_token",
+    ):
         """
         Initialize the privacy protection layer.
 
         Args:
             enabled: Whether privacy protection is enabled.
+            replacement_style: How masked spans are shown to the model / on screenshots.
+                ``hash_token`` — existing TYPE#hash (and brackets for XML/OCR).
+                ``fixed_placeholder`` — always ``[Privacy Information]`` (ablation).
         """
         self.enabled = enabled
+        self.replacement_style: Literal["hash_token", "fixed_placeholder"] = replacement_style
         self.token_to_real: Dict[str, str] = {}
         self.real_to_token: Dict[str, str] = {}
         # Store entity types for each real value (real_value -> entity_type)
@@ -50,12 +63,20 @@ class PrivacyProtectionLayer(DetectionMixin, ScreenshotMixin, StatsMixin):
         self._ocr_reader = None
         # GLiNER detection threshold (configurable)
         self.gliner_threshold: float = GLINER_DETECTION_THRESHOLD
-        self._privacy_notice = (
+        self._privacy_notice_hash = (
             "Remember that the values you observe in the UI might either be the real values "
             "or anonymized tokens such as \"PHONE_NUMBER#0abc1\". These tokens are privacy-preserving "
             "placeholders. If your plan requires the real value that sits behind a token, simply provide "
             "the anonymized token as the argument—the local runtime will convert it to the true value "
             "automatically. Never attempt to decode or reconstruct the plaintext yourself."
+        )
+        self._privacy_notice_placeholder = (
+            "Sensitive values in the UI or task may appear as the fixed placeholder "
+            f"\"{PII_FIXED_PLACEHOLDER}\". If an action must use the real value behind that label, "
+            "pass this exact placeholder string as the argument—the local runtime will substitute the "
+            "true value when there is a single unique sensitive value in this task; if several "
+            "different sensitive values were masked, substitution is skipped to avoid errors. "
+            "Never attempt to decode or reconstruct plaintext yourself."
         )
         # Statistics for anonymization
         self._anonymization_stats: List[Dict[str, Any]] = []
@@ -67,9 +88,48 @@ class PrivacyProtectionLayer(DetectionMixin, ScreenshotMixin, StatsMixin):
         self.mask_background_color: Tuple[int, int, int] = (255, 0, 255)  # Magnenta
         self.mask_text_color: Tuple[int, int, int] = (255, 255, 255)  # white text
 
+    @property
+    def _privacy_notice(self) -> str:
+        if self.replacement_style == "fixed_placeholder":
+            return self._privacy_notice_placeholder
+        return self._privacy_notice_hash
+
     # ---------------------------------------------------------------------- #
     # Token helpers
     # ---------------------------------------------------------------------- #
+    def _format_masked_surface(self, internal_token: str, wrap_token: bool) -> str:
+        """
+        String shown to the model / drawn on screenshots for a masked span.
+
+        internal_token is the registry key (TYPE#hash); wrap_token matches legacy XML/OCR bracket style.
+        """
+        if self.replacement_style == "fixed_placeholder":
+            return PII_FIXED_PLACEHOLDER
+        if wrap_token:
+            return f"[{internal_token}]"
+        return internal_token
+
+    @staticmethod
+    def deanonymize_fixed_placeholder_in_text(text: str, token_to_real: Dict[str, str]) -> str:
+        """
+        Replace ``[Privacy Information]`` with the sole real value when the mapping
+        contains exactly one distinct sensitive string; otherwise leave unchanged (ablation-safe).
+        """
+        if not isinstance(text, str) or not text or not token_to_real:
+            return text
+        if PII_FIXED_PLACEHOLDER not in text:
+            return text
+        unique_reals = {v for v in token_to_real.values() if isinstance(v, str)}
+        if len(unique_reals) == 1:
+            only = next(iter(unique_reals))
+            return text.replace(PII_FIXED_PLACEHOLDER, only)
+        if len(unique_reals) > 1:
+            print(
+                "[PrivacyProtection] Warning: Multiple distinct sensitive values registered; "
+                f"not replacing {PII_FIXED_PLACEHOLDER!r} in command/text to avoid wrong substitution."
+            )
+        return text
+
     def _short_hash(self, value: str, length: int = 5) -> str:
         """Return a base36 hash string of fixed length."""
         digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
@@ -212,7 +272,10 @@ class PrivacyProtectionLayer(DetectionMixin, ScreenshotMixin, StatsMixin):
             except (TypeError, AttributeError) as e:
                 print(f"[PrivacyProtection] Warning: Failed to replace token {token}: {e}")
                 continue
-        
+
+        if self.replacement_style == "fixed_placeholder":
+            result = self.deanonymize_fixed_placeholder_in_text(result, self.token_to_real)
+
         return result
 
     def get_token_for_value(self, real_value: str, category: str = None, identifier: str = None) -> Optional[str]:
@@ -430,15 +493,28 @@ Output ONLY the JSON object above and nothing else.
 _privacy_layer: Optional[PrivacyProtectionLayer] = None
 
 
+def _replacement_style_from_env() -> Literal["hash_token", "fixed_placeholder"]:
+    raw = (os.environ.get("PRIVACY_REPLACEMENT_STYLE") or "hash_token").strip().lower()
+    if raw in ("fixed_placeholder", "placeholder", "fixed"):
+        return "fixed_placeholder"
+    return "hash_token"
+
+
 def get_privacy_layer() -> PrivacyProtectionLayer:
     """Get the global privacy protection layer instance."""
     global _privacy_layer
     if _privacy_layer is None:
         try:
-            _privacy_layer = PrivacyProtectionLayer(enabled=True)
+            _privacy_layer = PrivacyProtectionLayer(
+                enabled=True,
+                replacement_style=_replacement_style_from_env(),
+            )
         except Exception as e:
             print(f"[PrivacyProtection] Warning: Failed to initialize privacy layer: {e}")
-            _privacy_layer = PrivacyProtectionLayer(enabled=False)
+            _privacy_layer = PrivacyProtectionLayer(
+                enabled=False,
+                replacement_style=_replacement_style_from_env(),
+            )
     return _privacy_layer
 
 

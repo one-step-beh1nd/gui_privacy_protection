@@ -13,7 +13,7 @@ from PIL import Image
 from evaluation.definition import *
 from evaluation.utils import *
 from utils_mobile.utils import get_compressed_xml
-from utils_mobile.privacy_protection import get_privacy_layer
+from utils_mobile.privacy_protection import PrivacyProtectionLayer, get_privacy_layer
 
 
 T_INPUT = TypeVar('T_INPUT')
@@ -66,7 +66,7 @@ def deanonymize_xml_tree(xml_tree, token_mapping):
         for token, real_value in sorted_tokens:
             if isinstance(token, str) and isinstance(real_value, str):
                 result = result.replace(token, real_value)
-        return result
+        return PrivacyProtectionLayer.deanonymize_fixed_placeholder_in_text(result, token_mapping)
     else:
         return xml_tree
 
@@ -129,7 +129,8 @@ def deanonymize_text_content(text: Any, token_mapping: Optional[Dict[str, str]] 
             real_value = privacy_layer.token_to_real.get(token)
         return real_value if isinstance(real_value, str) else match.group(0)
 
-    return TOKEN_PATTERN.sub(replace_unresolved, result)
+    result = TOKEN_PATTERN.sub(replace_unresolved, result)
+    return PrivacyProtectionLayer.deanonymize_fixed_placeholder_in_text(result, mapping)
 
 
 def extract_unresolved_tokens(text: Any) -> List[str]:

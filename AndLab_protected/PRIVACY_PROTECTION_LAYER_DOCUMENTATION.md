@@ -1083,15 +1083,44 @@ Token mappings are stored in memory during execution and saved to disk for evalu
   "real_to_entity_type": {
     "123-456-7890": "PHONE_NUMBER",
     "john.doe@example.com": "EMAIL_ADDRESS"
-  }
+  },
+  "replacement_style": "hash_token",
+  "fixed_placeholder_literal": "[Privacy Information]"
 }
 ```
+
+The last two fields record which surface style was used; in `fixed_placeholder` ablation runs, UI text still maps via `token_to_real` while the model only sees `[Privacy Information]`.
 
 ### Token Reuse Strategy
 
 1. **Prompt NER has priority**: Entities detected in the prompt are registered first
 2. **XML/Screenshot reuse**: If the same entity appears in XML or screenshots, the same token is reused
 3. **Fuzzy matching**: OCR text is matched against registered entities using fuzzy matching (normalized string + Levenshtein distance)
+
+### Fixed placeholder mode (ablation)
+
+For experiments that compare against hash-token masking, you can show a **single fixed label** to the model and on screenshots instead of `TYPE#hash` tokens.
+
+**Enable**
+
+- Environment variable (before the process starts, so the first `get_privacy_layer()` call sees it):  
+  `PRIVACY_REPLACEMENT_STYLE=fixed_placeholder`  
+  (aliases: `placeholder`, `fixed`)
+- Or construct the layer explicitly:  
+  `PrivacyProtectionLayer(enabled=True, replacement_style="fixed_placeholder")`  
+  and register it with `set_privacy_layer(...)` before any other code uses `get_privacy_layer()`.
+
+**Behavior**
+
+- **Detection** (GLiNER + regex fallbacks, whitelist, XML exemptions, OCR pipeline) is unchanged.
+- **Surface string** (prompt, compressed XML, and text drawn in screenshot mask regions) is always the literal `[Privacy Information]` (constant `PII_FIXED_PLACEHOLDER`), not `PHONE_NUMBER#…` or `[PHONE_NUMBER#…]`.
+- **Internal registry** still uses deterministic `TYPE#hash` keys in `token_to_real` / `real_to_token` for reuse across modalities and for `privacy_token_mapping.json`.
+- **`convert_token_to_real`** and evaluation helpers (`deanonymize_text_content`, `deanonymize_xml_tree`) replace `[Privacy Information]` with a real value **only** when the mapping contains **exactly one** distinct sensitive string; if several different values were masked, substitution is skipped (with a warning) to avoid wrong writes.
+- **`cloud_agent_compute_with_tokens`** expects anonymous **hash tokens** in `anon_tokens`, not `[Privacy Information]` — use default hash-token mode for that API.
+
+**Saved mapping metadata**
+
+`privacy_token_mapping.json` also includes `replacement_style` and `fixed_placeholder_literal` for run provenance (in addition to `token_to_real`, etc.).
 
 ---
 
