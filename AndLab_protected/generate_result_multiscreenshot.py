@@ -26,7 +26,10 @@ Important arguments:
     --output_folder
         Directory where new `results.jsonl` / `total.jsonl` will be written.
     --target_dirs
-        One or more run directory names under `input_folder`.
+        One or more run directory names under `input_folder`. You can pass
+        multiple names separated by spaces, or a single comma-separated list
+        (e.g. `dir_a,dir_b`). Directories are evaluated one by one in the
+        order you give.
     --operation_judge_model / --query_judge_model
         Type-specific judge model names for `operation` and `query_detect`.
     --api_base / --api_key
@@ -72,7 +75,8 @@ def parse_args():
             "示例:\n"
             "  python generate_result_multiscreenshot.py \\\n"
             "    --input_folder logs/evaluation \\\n"
-            "    --target_dirs test_gliner \\\n"
+            "    --target_dirs test_run_a test_run_b \\\n"
+            "    # 或: --target_dirs test_run_a,test_run_b \\\n"
             "    --operation_judge_model Qwen2.5-VL-72B-Instruct \\\n"
             "    --query_judge_model Qwen3-VL-235B-A22B-Thinking \\\n"
             "    --api_base https://your-openai-compatible-endpoint/v1 \\\n"
@@ -123,7 +127,12 @@ def parse_args():
         type=str,
         nargs="+",
         default=None,
-        help="只评估指定的运行目录名；不传则扫描 input_folder 下全部目录",
+        help=(
+            "只评估指定的运行目录名（`input_folder` 下的子目录名）。"
+            "可空格传多个，也可逗号分隔写在一项里，例如: "
+            "`--target_dirs a b` 或 `--target_dirs a,b,c`。"
+            "将按你给出的顺序依次评估每个目录。"
+        ),
     )
     parser.add_argument(
         "--tail_image_count",
@@ -145,6 +154,33 @@ def parse_args():
         help="选择要评估的 metric_type；默认 both 表示 operation 和 query_detect 都评估",
     )
     return parser.parse_args()
+
+
+def _normalize_target_dir_names(raw: Optional[List[str]]) -> Optional[List[str]]:
+    """
+    Flatten --target_dirs into an ordered unique list of basenames.
+
+    Supports:
+    - multiple argv tokens: --target_dirs run_a run_b
+    - comma-separated in one token: --target_dirs run_a,run_b
+    """
+    if not raw:
+        return None
+    names: List[str] = []
+    for chunk in raw:
+        if "," in chunk:
+            names.extend(part.strip() for part in chunk.split(",") if part.strip())
+        else:
+            chunk = chunk.strip()
+            if chunk:
+                names.append(chunk)
+    seen = set()
+    out: List[str] = []
+    for name in names:
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return out or None
 
 
 def _build_args_with_judge_model(args, judge_model: str):
@@ -536,13 +572,29 @@ def main():
     task_yamls = ["evaluation/config/" + name for name in task_yamls if name.endswith(".yaml")]
     create_time = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
-    all_input_dirs = [os.path.join(args.input_folder, input_dir) for input_dir in os.listdir(args.input_folder)]
-    if args.target_dirs:
-        input_dirs = [path for path in all_input_dirs if os.path.basename(path) in args.target_dirs]
+    all_input_dirs = [
+        os.path.join(args.input_folder, input_dir) for input_dir in os.listdir(args.input_folder)
+    ]
+    target_names = _normalize_target_dir_names(args.target_dirs)
+    if target_names:
+        name_to_path = {os.path.basename(p): p for p in all_input_dirs}
+        input_dirs = []
+        missing = []
+        for name in target_names:
+            if name in name_to_path:
+                input_dirs.append(name_to_path[name])
+            else:
+                missing.append(name)
+        if missing:
+            print(
+                f"Warning: The following names were not found under {args.input_folder}: {missing}"
+            )
         if not input_dirs:
-            print(f"Warning: No matching directories found in {args.input_folder} for {args.target_dirs}")
+            print(
+                f"Warning: No matching directories found in {args.input_folder} for {target_names}"
+            )
             return
-        print(f"> Will evaluate only: {[os.path.basename(path) for path in input_dirs]}")
+        print(f"> Will evaluate in order: {[os.path.basename(path) for path in input_dirs]}")
     else:
         input_dirs = all_input_dirs
 
