@@ -107,6 +107,9 @@ class TaskConfig:
     sample: Optional[bool] = False
     show_avd: Optional[bool] = False
     version: Optional[str] = None
+    privacy_backend: Optional[str] = "legacy"
+    dualtap_checkpoint: Optional[str] = None
+    dualtap_image_size: Optional[int] = None
 
     def subdir_config(self, subdir: str):
         new_config = self.__dict__.copy()

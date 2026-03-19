@@ -3,6 +3,7 @@ import templates.seeact_xml_prompts as SeeActPrompts_xml
 from evaluation.definition import *
 from evaluation.utils import *
 from templates import *
+from utils_mobile.privacy.dualtap_adapter import is_dualtap_backend
 from utils_mobile.privacy_protection import get_privacy_layer
 import json
 
@@ -10,6 +11,8 @@ import json
 
 def _with_privacy_notice(instruction: str) -> str:
     """Attach a short privacy note so the agent understands placeholders."""
+    if is_dualtap_backend():
+        return instruction
     privacy_layer = get_privacy_layer()
     return privacy_layer.attach_notice(instruction) if privacy_layer.enabled else instruction
 

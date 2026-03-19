@@ -9,6 +9,8 @@ from agent import get_agent
 from evaluation.auto_test import *
 from generate_result import find_all_task_files
 from evaluation.configs import AppConfig, TaskConfig
+from utils_mobile.privacy.dualtap_adapter import DUALTAP_BACKEND
+from utils_mobile.privacy_protection import PrivacyProtectionLayer, set_privacy_layer
 
 
 def calculate_overall_anonymization_stats(task_dir: str):
@@ -154,6 +156,20 @@ if __name__ == '__main__':
     agent_config = yaml_data["agent"]
     task_config = yaml_data["task"]
     eval_config = yaml_data["eval"]
+
+    task_args = task_config.get("args", {})
+    privacy_backend = task_args.get("privacy_backend") or os.environ.get("PRIVACY_BACKEND") or "legacy"
+    os.environ["PRIVACY_BACKEND"] = privacy_backend
+
+    dualtap_checkpoint = task_args.get("dualtap_checkpoint") or os.environ.get("DUALTAP_CHECKPOINT")
+    if dualtap_checkpoint:
+        os.environ["DUALTAP_CHECKPOINT"] = dualtap_checkpoint
+
+    dualtap_image_size = task_args.get("dualtap_image_size") or os.environ.get("DUALTAP_IMAGE_SIZE")
+    if dualtap_image_size:
+        os.environ["DUALTAP_IMAGE_SIZE"] = str(dualtap_image_size)
+
+    set_privacy_layer(PrivacyProtectionLayer(enabled=privacy_backend != DUALTAP_BACKEND))
 
     autotask_class = task_config["class"] if "class" in task_config else "ScreenshotMobileTask_AutoTest"
 

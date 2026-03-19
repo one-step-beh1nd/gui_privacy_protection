@@ -5,6 +5,7 @@ import jsonlines
 
 from utils_mobile.utils import draw_bbox_multi
 from utils_mobile.xml_tool import UIXMLTree
+from utils_mobile.privacy.dualtap_adapter import is_dualtap_backend, perturb_screenshot_with_dualtap
 from utils_mobile.privacy_protection import get_privacy_layer
 
 
@@ -29,6 +30,7 @@ def get_compressed_xml(xml_path, type="plain_text", version="v1"):
 class JSONRecorder:
     def __init__(self, id, instruction, anonymized_instruction, page_executor, config):
         self.id = id
+        self.config = config
         # 原始用户任务指令（未匿名）
         self.instruction = instruction
         # 匿名后的任务指令（发给云端 agent 的版本）
@@ -121,8 +123,16 @@ class JSONRecorder:
         
         if need_screenshot:
             self.page_executor.update_screenshot(prefix=str(self.turn_number), suffix="before")
+            if self.page_executor.current_screenshot and is_dualtap_backend(self.config):
+                try:
+                    self.page_executor.current_screenshot = perturb_screenshot_with_dualtap(
+                        self.page_executor.current_screenshot,
+                        config=self.config,
+                    )
+                except Exception as e:
+                    print(f"Warning: Failed to apply DualTAP perturbation to screenshot: {e}")
             # Apply privacy protection to screenshot
-            if privacy_layer.enabled and self.page_executor.current_screenshot:
+            elif privacy_layer.enabled and self.page_executor.current_screenshot:
                 try:
                     masked_image_path, new_tokens = privacy_layer.identify_and_mask_screenshot(
                         self.page_executor.current_screenshot
@@ -254,7 +264,9 @@ class JSONRecorder:
         # anonymizing the instruction, so entities that appeared in the instruction will
         # be mapped to the same tokens (via _get_or_create_token which checks real_to_token first).
         privacy_layer = get_privacy_layer()
-        if privacy_layer.enabled and xml_compressed:
+        if is_dualtap_backend(self.config):
+            pass
+        elif privacy_layer.enabled and xml_compressed:
             try:
                 # Only mask the compressed XML (not the original XML)
                 # identify_and_mask_xml is designed for compressed XML format

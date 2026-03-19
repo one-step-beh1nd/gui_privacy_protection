@@ -10,6 +10,7 @@ from page_executor.simple_vision_executor import VisionExecutor
 from recorder import JSONRecorder
 from templates import *
 from templates.packages import find_package
+from utils_mobile.privacy.dualtap_adapter import is_dualtap_backend
 from utils_mobile.privacy_protection import get_privacy_layer
 
 
@@ -250,7 +251,9 @@ class AutoTest():
         self.original_instruction = task_dict['task_instruction']
         self.instruction = self.original_instruction
         privacy_layer = get_privacy_layer()
-        if privacy_layer.enabled:
+        if is_dualtap_backend(self.config):
+            self.instruction = self.original_instruction
+        elif privacy_layer.enabled:
             try:
                 anonymized_instruction, _ = privacy_layer.anonymize_prompt(self.original_instruction)
                 self.instruction = anonymized_instruction
