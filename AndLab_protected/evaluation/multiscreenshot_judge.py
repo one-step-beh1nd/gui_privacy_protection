@@ -4,14 +4,38 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Sequence
 
-import backoff
+try:
+    import backoff
+except ImportError:
+    class _BackoffShim:
+        @staticmethod
+        def expo(*args, **kwargs):
+            return None
+
+        @staticmethod
+        def on_exception(*args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+    backoff = _BackoffShim()
+
 from openai import OpenAI
 
 
-MULTI_IMAGE_STATUSES = {"success", "failure", "uncertain"}
-BATCH_STATUSES = {"success", "failure", "in_progress", "uncertain"}
-PER_IMAGE_STATUSES = {"success", "failure", "in_progress"}
+VISION_STATUSES = {"success", "failure"}
 CONFIDENCE_LEVELS = {"high", "medium", "low"}
+
+# Leave values empty by default. Fill in specific task ids manually when needed.
+TASK_ID_EXTRA_PROMPTS: Dict[str, str] = {
+    # "cantook_9": "",
+    "pimusic_8": (
+        "For this task, the final sorted song list must include all of the following songs: "
+        "'The Wall', 'Dark Side Of The Moon', 'Comfortably Numb', and 'Wish You Were Here'. "
+        "If any one or more of these songs are missing from the final sorted list, you must "
+        "judge the task as a failure even if the visible ordering appears correct."
+    )
+}
 
 
 def _encode_image(image_path: str) -> str:
@@ -56,14 +80,10 @@ def _extract_json_dict(raw_text: str) -> Dict[str, Any]:
     return payload
 
 
-def _normalize_common_payload(
-    payload: Dict[str, Any],
-    valid_statuses: Sequence[str],
-    default_status: str,
-) -> Dict[str, Any]:
-    status = str(payload.get("status", default_status)).strip().lower()
-    if status not in valid_statuses:
-        status = default_status
+def _normalize_binary_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    status = str(payload.get("status", "failure")).strip().lower()
+    if status not in VISION_STATUSES:
+        status = "failure"
 
     confidence = str(payload.get("confidence", "medium")).strip().lower()
     if confidence not in CONFIDENCE_LEVELS:
@@ -90,12 +110,14 @@ def _make_multimodal_message(prompt: str, image_paths: Sequence[str]) -> List[Di
     content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
     for image_path in image_paths:
         base64_image = _encode_image(image_path)
-        content.append({
-            "type": "image_url",
-            "image_url": {
-                "url": f"data:image/png;base64,{base64_image}",
-            },
-        })
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{base64_image}",
+                },
+            }
+        )
     return [{"role": "user", "content": content}]
 
 
@@ -106,7 +128,7 @@ def _chat_completion(
     model_name: str,
     api_key: Optional[str],
     api_base: Optional[str],
-    max_tokens: int = 700,
+    max_tokens: int = 500,
 ) -> str:
     client = _build_client(api_key, api_base)
     response = client.chat.completions.create(
@@ -118,10 +140,6 @@ def _chat_completion(
     return response.choices[0].message.content
 
 
-def _split_batches(items: Sequence[str], batch_size: int) -> List[List[str]]:
-    return [list(items[idx: idx + batch_size]) for idx in range(0, len(items), batch_size)]
-
-
 def _format_image_order(image_paths: Sequence[str]) -> str:
     lines = []
     for index, image_path in enumerate(image_paths, start=1):
@@ -129,342 +147,16 @@ def _format_image_order(image_paths: Sequence[str]) -> str:
     return "\n".join(lines)
 
 
-def _build_multiscreenshot_prompt(
-    *,
-    task_prompt: str,
-    rule_result: Dict[str, Any],
-    final_action: Optional[Dict[str, Any]],
-    image_paths: Sequence[str],
-) -> str:
-    return (
-        "You are evaluating whether an Android mobile task has been completed successfully.\n\n"
-        f"Task instruction:\n{task_prompt}\n\n"
-        "Auxiliary symbolic evaluation result (helpful but NOT authoritative for the final decision):\n"
-        f"{json.dumps(rule_result, ensure_ascii=False, indent=2)}\n\n"
-        "Final recorded action (if any):\n"
-        f"{json.dumps(final_action or {}, ensure_ascii=False, indent=2)}\n\n"
-        "You will receive screenshots in chronological order. "
-        "Each file named with '-before' is the screen before a step. "
-        "Each file named with 'screenshot-end' is the final screen after execution finished.\n\n"
-        "Image order:\n"
-        f"{_format_image_order(image_paths)}\n\n"
-        "Decide whether the task is truly complete based on the screenshots plus the auxiliary context.\n"
-        "Return strict JSON only with this schema:\n"
-        "{\n"
-        '  "status": "success" | "failure" | "uncertain",\n'
-        '  "reason": "short explanation",\n'
-        '  "confidence": "high" | "medium" | "low",\n'
-        '  "evidence_images": ["filename1.png", "filename2.png"]\n'
-        "}\n"
-        "Use 'success' only if the task requirements are clearly satisfied. "
-        "Use 'failure' if the screenshots clearly show the task failed or ended in the wrong state. "
-        "Use 'uncertain' if the visual evidence is mixed or insufficient."
-    )
+def _get_task_id_extra_prompt(task_id: str) -> str:
+    extra_prompt = TASK_ID_EXTRA_PROMPTS.get(task_id, "")
+    if not isinstance(extra_prompt, str):
+        return ""
+    return extra_prompt.strip()
 
 
-def _build_batch_prompt(
-    *,
-    task_prompt: str,
-    rule_result: Dict[str, Any],
-    final_action: Optional[Dict[str, Any]],
-    image_paths: Sequence[str],
-    batch_index: int,
-    batch_count: int,
-) -> str:
-    return (
-        "You are evaluating one chronological batch of screenshots from an Android task.\n\n"
-        f"Task instruction:\n{task_prompt}\n\n"
-        "Auxiliary symbolic evaluation result:\n"
-        f"{json.dumps(rule_result, ensure_ascii=False, indent=2)}\n\n"
-        "Final recorded action (if any):\n"
-        f"{json.dumps(final_action or {}, ensure_ascii=False, indent=2)}\n\n"
-        f"This is screenshot batch {batch_index} of {batch_count}.\n"
-        "Image order in this batch:\n"
-        f"{_format_image_order(image_paths)}\n\n"
-        "Return strict JSON only with this schema:\n"
-        "{\n"
-        '  "status": "in_progress" | "success" | "failure" | "uncertain",\n'
-        '  "reason": "short explanation",\n'
-        '  "confidence": "high" | "medium" | "low",\n'
-        '  "evidence_images": ["filename1.png"]\n'
-        "}\n"
-        "Use 'in_progress' if this batch only shows intermediate execution and not a final outcome."
-    )
-
-
-def _build_batch_summary_prompt(
-    *,
-    task_prompt: str,
-    rule_result: Dict[str, Any],
-    final_action: Optional[Dict[str, Any]],
-    batch_summaries: Sequence[Dict[str, Any]],
-) -> str:
-    return (
-        "You are aggregating batch-level judgments for an Android mobile task.\n\n"
-        f"Task instruction:\n{task_prompt}\n\n"
-        "Auxiliary symbolic evaluation result:\n"
-        f"{json.dumps(rule_result, ensure_ascii=False, indent=2)}\n\n"
-        "Final recorded action (if any):\n"
-        f"{json.dumps(final_action or {}, ensure_ascii=False, indent=2)}\n\n"
-        "Batch summaries:\n"
-        f"{json.dumps(list(batch_summaries), ensure_ascii=False, indent=2)}\n\n"
-        "Return strict JSON only with this schema:\n"
-        "{\n"
-        '  "status": "success" | "failure" | "uncertain",\n'
-        '  "reason": "short explanation",\n'
-        '  "confidence": "high" | "medium" | "low",\n'
-        '  "evidence_images": ["filename1.png"]\n'
-        "}\n"
-        "Use 'uncertain' if the batch summaries conflict or are insufficient."
-    )
-
-
-def _build_single_image_prompt(
-    *,
-    task_prompt: str,
-    rule_result: Dict[str, Any],
-    final_action: Optional[Dict[str, Any]],
-    image_path: str,
-) -> str:
-    return (
-        "You are judging one screenshot from an Android task timeline.\n\n"
-        f"Task instruction:\n{task_prompt}\n\n"
-        "Auxiliary symbolic evaluation result:\n"
-        f"{json.dumps(rule_result, ensure_ascii=False, indent=2)}\n\n"
-        "Final recorded action (if any):\n"
-        f"{json.dumps(final_action or {}, ensure_ascii=False, indent=2)}\n\n"
-        f"Current screenshot filename: {os.path.basename(image_path)}\n\n"
-        "Return strict JSON only with this schema:\n"
-        "{\n"
-        '  "status": "in_progress" | "success" | "failure",\n'
-        '  "reason": "short explanation",\n'
-        '  "confidence": "high" | "medium" | "low",\n'
-        '  "evidence_images": ["filename.png"]\n'
-        "}\n"
-        "Use 'success' only if this screenshot clearly shows the task is completed successfully. "
-        "Use 'failure' only if it clearly shows the task ended unsuccessfully or in the wrong state. "
-        "Otherwise use 'in_progress'."
-    )
-
-
-def _judge_multiscreenshot_once(
-    *,
-    image_paths: Sequence[str],
-    task_prompt: str,
-    rule_result: Dict[str, Any],
-    final_action: Optional[Dict[str, Any]],
-    args,
-) -> Dict[str, Any]:
-    prompt = _build_multiscreenshot_prompt(
-        task_prompt=task_prompt,
-        rule_result=rule_result,
-        final_action=final_action,
-        image_paths=image_paths,
-    )
-    raw_text = _chat_completion(
-        messages=_make_multimodal_message(prompt, image_paths),
-        model_name=args.judge_model,
-        api_key=getattr(args, "api_key", None),
-        api_base=getattr(args, "api_base", None),
-    )
-    payload = _extract_json_dict(raw_text)
-    payload = _normalize_common_payload(payload, MULTI_IMAGE_STATUSES, "uncertain")
-    payload["raw_response"] = raw_text
-    return payload
-
-
-def _judge_batch(
-    *,
-    image_paths: Sequence[str],
-    task_prompt: str,
-    rule_result: Dict[str, Any],
-    final_action: Optional[Dict[str, Any]],
-    batch_index: int,
-    batch_count: int,
-    args,
-) -> Dict[str, Any]:
-    prompt = _build_batch_prompt(
-        task_prompt=task_prompt,
-        rule_result=rule_result,
-        final_action=final_action,
-        image_paths=image_paths,
-        batch_index=batch_index,
-        batch_count=batch_count,
-    )
-    raw_text = _chat_completion(
-        messages=_make_multimodal_message(prompt, image_paths),
-        model_name=args.judge_model,
-        api_key=getattr(args, "api_key", None),
-        api_base=getattr(args, "api_base", None),
-    )
-    payload = _extract_json_dict(raw_text)
-    payload = _normalize_common_payload(payload, BATCH_STATUSES, "uncertain")
-    payload["raw_response"] = raw_text
-    return payload
-
-
-def _judge_from_batch_summaries(
-    *,
-    task_prompt: str,
-    rule_result: Dict[str, Any],
-    final_action: Optional[Dict[str, Any]],
-    batch_summaries: Sequence[Dict[str, Any]],
-    args,
-) -> Dict[str, Any]:
-    prompt = _build_batch_summary_prompt(
-        task_prompt=task_prompt,
-        rule_result=rule_result,
-        final_action=final_action,
-        batch_summaries=batch_summaries,
-    )
-    raw_text = _chat_completion(
-        messages=[{"role": "user", "content": prompt}],
-        model_name=args.judge_model,
-        api_key=getattr(args, "api_key", None),
-        api_base=getattr(args, "api_base", None),
-        max_tokens=500,
-    )
-    payload = _extract_json_dict(raw_text)
-    payload = _normalize_common_payload(payload, MULTI_IMAGE_STATUSES, "uncertain")
-    payload["raw_response"] = raw_text
-    return payload
-
-
-def _judge_single_image(
-    *,
-    image_path: str,
-    task_prompt: str,
-    rule_result: Dict[str, Any],
-    final_action: Optional[Dict[str, Any]],
-    args,
-) -> Dict[str, Any]:
-    prompt = _build_single_image_prompt(
-        task_prompt=task_prompt,
-        rule_result=rule_result,
-        final_action=final_action,
-        image_path=image_path,
-    )
-    raw_text = _chat_completion(
-        messages=_make_multimodal_message(prompt, [image_path]),
-        model_name=args.judge_model,
-        api_key=getattr(args, "api_key", None),
-        api_base=getattr(args, "api_base", None),
-        max_tokens=350,
-    )
-    payload = _extract_json_dict(raw_text)
-    payload = _normalize_common_payload(payload, PER_IMAGE_STATUSES, "in_progress")
-    payload["raw_response"] = raw_text
-    return payload
-
-
-def _build_rule_fallback(
-    rule_result: Dict[str, Any],
-    used_images: Sequence[str],
-    reason: str,
-    *,
-    needs_manual_review: bool = False,
-) -> Dict[str, Any]:
-    complete = rule_result.get("complete", False)
-    return {
-        "complete": complete,
-        "complete_source": "rule_fallback",
-        "vision_status": "unavailable",
-        "vision_reason": reason,
-        "vision_confidence": "low",
-        "used_images": [os.path.basename(path) for path in used_images],
-        "needs_manual_review": needs_manual_review,
-        "conflict": False,
-    }
-
-
-def _convert_multi_result(
-    payload: Dict[str, Any],
-    *,
-    source: str,
-    image_paths: Sequence[str],
-) -> Dict[str, Any]:
-    status = payload["status"]
-    return {
-        "complete": True if status == "success" else False,
-        "complete_source": source,
-        "vision_status": status,
-        "vision_reason": payload["reason"],
-        "vision_confidence": payload["confidence"],
-        "used_images": [os.path.basename(path) for path in image_paths],
-        "needs_manual_review": False,
-        "conflict": False,
-        "evidence_images": payload["evidence_images"],
-    }
-
-
-def _aggregate_per_image_results(
-    per_image_results: Sequence[Dict[str, Any]],
-    image_paths: Sequence[str],
-) -> Dict[str, Any]:
-    statuses = [result["status"] for result in per_image_results]
-    has_success = "success" in statuses
-    has_failure = "failure" in statuses
-
-    if has_success and has_failure:
-        return {
-            "complete": None,
-            "complete_source": "vision_per_image",
-            "vision_status": "conflict",
-            "vision_reason": "Per-image judgments contain both success and failure. Manual review is required.",
-            "vision_confidence": "low",
-            "used_images": [os.path.basename(path) for path in image_paths],
-            "needs_manual_review": True,
-            "conflict": True,
-            "per_image_results": list(per_image_results),
-        }
-
-    if has_success:
-        return {
-            "complete": True,
-            "complete_source": "vision_per_image",
-            "vision_status": "success",
-            "vision_reason": "Per-image judgments contain at least one success and no failure.",
-            "vision_confidence": "medium",
-            "used_images": [os.path.basename(path) for path in image_paths],
-            "needs_manual_review": False,
-            "conflict": False,
-            "per_image_results": list(per_image_results),
-        }
-
-    if has_failure:
-        return {
-            "complete": False,
-            "complete_source": "vision_per_image",
-            "vision_status": "failure",
-            "vision_reason": "Per-image judgments contain failure and no success.",
-            "vision_confidence": "medium",
-            "used_images": [os.path.basename(path) for path in image_paths],
-            "needs_manual_review": False,
-            "conflict": False,
-            "per_image_results": list(per_image_results),
-        }
-
-    return {
-        "complete": False,
-        "complete_source": "vision_per_image",
-        "vision_status": "in_progress",
-        "vision_reason": "All screenshots were judged as in-progress only.",
-        "vision_confidence": "medium",
-        "used_images": [os.path.basename(path) for path in image_paths],
-        "needs_manual_review": False,
-        "conflict": False,
-        "per_image_results": list(per_image_results),
-    }
-
-
-def judge_complete_with_multiscreenshot(
-    *,
-    image_paths: Sequence[str],
-    task_prompt: str,
-    rule_result: Dict[str, Any],
-    final_action: Optional[Dict[str, Any]],
-    args,
-) -> Dict[str, Any]:
+def _select_tail_images(image_paths: Sequence[str], tail_image_count: int) -> List[str]:
+    if tail_image_count <= 0:
+        tail_image_count = 1
     existing_images: List[str] = []
     seen = set()
     for image_path in image_paths:
@@ -474,124 +166,141 @@ def judge_complete_with_multiscreenshot(
             continue
         seen.add(image_path)
         existing_images.append(image_path)
+    if len(existing_images) <= tail_image_count:
+        return existing_images
+    return existing_images[-tail_image_count:]
 
-    if not existing_images:
+
+def _build_operation_prompt(
+    *,
+    task_id: str,
+    task_prompt: str,
+    extra_prompt: str,
+    image_paths: Sequence[str],
+) -> str:
+    extra_prompt_block = extra_prompt if extra_prompt else "None"
+    return (
+        "You are evaluating whether an Android operation task has been completed successfully.\n\n"
+        f"Task id:\n{task_id}\n\n"
+        f"Task instruction:\n{task_prompt}\n\n"
+        "You will receive multiple screenshots from the SAME task execution.\n"
+        "These screenshots are already sorted in chronological order from earlier to later.\n"
+        "The first image is earlier in the execution process, and the last image is the latest one.\n"
+        "Please judge the final task outcome based on the full ordered screenshot sequence.\n\n"
+        "Task-specific extra reminder:\n"
+        f"{extra_prompt_block}\n\n"
+        "Image order:\n"
+        f"{_format_image_order(image_paths)}\n\n"
+        "Return strict JSON only with this schema:\n"
+        "{\n"
+        '  "status": "success" | "failure",\n'
+        '  "reason": "short explanation",\n'
+        '  "confidence": "high" | "medium" | "low",\n'
+        '  "evidence_images": ["filename1.png", "filename2.png"]\n'
+        "}\n"
+        "Use `success` only when the ordered screenshots clearly show the task was completed successfully.\n"
+        "Otherwise return `failure`."
+    )
+
+
+def _judge_operation_tail_images(
+    *,
+    task_id: str,
+    task_prompt: str,
+    selected_images: Sequence[str],
+    args,
+) -> Dict[str, Any]:
+    extra_prompt = _get_task_id_extra_prompt(task_id)
+    prompt = _build_operation_prompt(
+        task_id=task_id,
+        task_prompt=task_prompt,
+        extra_prompt=extra_prompt,
+        image_paths=selected_images,
+    )
+    raw_text = _chat_completion(
+        messages=_make_multimodal_message(prompt, selected_images),
+        model_name=args.judge_model,
+        api_key=getattr(args, "api_key", None),
+        api_base=getattr(args, "api_base", None),
+    )
+    payload = _extract_json_dict(raw_text)
+    payload = _normalize_binary_payload(payload)
+    payload["judge_prompt"] = prompt
+    payload["raw_response"] = raw_text
+    payload["extra_prompt"] = extra_prompt
+    return payload
+
+
+def _build_rule_fallback(
+    rule_result: Dict[str, Any],
+    used_images: Sequence[str],
+    reason: str,
+    *,
+    extra_prompt: str,
+) -> Dict[str, Any]:
+    complete = bool(rule_result.get("complete", False))
+    return {
+        "complete": complete,
+        "complete_source": "rule_fallback",
+        "vision_status": "unavailable",
+        "vision_reason": reason,
+        "vision_confidence": "low",
+        "used_images": [os.path.basename(path) for path in used_images],
+        "operation_judge_prompt": None,
+        "operation_judge_response": None,
+        "operation_extra_prompt": extra_prompt,
+        "needs_manual_review": False,
+    }
+
+
+def judge_complete_with_multiscreenshot(
+    *,
+    task_id: str,
+    image_paths: Sequence[str],
+    task_prompt: str,
+    rule_result: Dict[str, Any],
+    final_action: Optional[Dict[str, Any]],
+    args,
+) -> Dict[str, Any]:
+    del final_action
+
+    tail_image_count = max(1, int(getattr(args, "tail_image_count", 8)))
+    extra_prompt = _get_task_id_extra_prompt(task_id)
+    selected_images = _select_tail_images(image_paths, tail_image_count)
+
+    if not selected_images:
         return _build_rule_fallback(
             rule_result,
             [],
             "No valid screenshots were found for vision-based complete judgment.",
-            needs_manual_review=True,
+            extra_prompt=extra_prompt,
         )
 
-    max_images = max(1, int(getattr(args, "max_images_per_request", 20)))
-    vision_mode = getattr(args, "vision_mode", "auto")
-
-    if vision_mode in {"auto", "multiscreenshot"} and len(existing_images) <= max_images:
-        try:
-            multi_result = _judge_multiscreenshot_once(
-                image_paths=existing_images,
-                task_prompt=task_prompt,
-                rule_result=rule_result,
-                final_action=final_action,
-                args=args,
-            )
-            if multi_result["status"] != "uncertain":
-                return _convert_multi_result(
-                    multi_result,
-                    source="vision_multiscreenshot",
-                    image_paths=existing_images,
-                )
-        except Exception as exc:
-            if vision_mode == "multiscreenshot":
-                return _build_rule_fallback(
-                    rule_result,
-                    existing_images,
-                    f"Multiscreenshot judge failed: {exc}",
-                    needs_manual_review=True,
-                )
-
-    if vision_mode in {"auto", "multiscreenshot"} and len(existing_images) > max_images:
-        try:
-            batches = _split_batches(existing_images, max_images)
-            batch_summaries = []
-            for batch_index, batch in enumerate(batches, start=1):
-                batch_result = _judge_batch(
-                    image_paths=batch,
-                    task_prompt=task_prompt,
-                    rule_result=rule_result,
-                    final_action=final_action,
-                    batch_index=batch_index,
-                    batch_count=len(batches),
-                    args=args,
-                )
-                batch_summaries.append({
-                    "batch_index": batch_index,
-                    "image_filenames": [os.path.basename(path) for path in batch],
-                    **batch_result,
-                })
-
-            has_batch_success = any(item["status"] == "success" for item in batch_summaries)
-            has_batch_failure = any(item["status"] == "failure" for item in batch_summaries)
-            if not (has_batch_success and has_batch_failure):
-                aggregate_result = _judge_from_batch_summaries(
-                    task_prompt=task_prompt,
-                    rule_result=rule_result,
-                    final_action=final_action,
-                    batch_summaries=batch_summaries,
-                    args=args,
-                )
-                if aggregate_result["status"] != "uncertain":
-                    output = _convert_multi_result(
-                        aggregate_result,
-                        source="vision_batch_summary",
-                        image_paths=existing_images,
-                    )
-                    output["batch_summaries"] = batch_summaries
-                    return output
-        except Exception:
-            pass
-
-    if vision_mode == "multiscreenshot":
+    try:
+        vision_result = _judge_operation_tail_images(
+            task_id=task_id,
+            task_prompt=task_prompt,
+            selected_images=selected_images,
+            args=args,
+        )
+    except Exception as exc:
         return _build_rule_fallback(
             rule_result,
-            existing_images,
-            "Multiscreenshot mode did not produce a decisive result, so the script kept the original rule-based complete value.",
-            needs_manual_review=True,
+            selected_images,
+            f"Vision request failed: {exc}",
+            extra_prompt=extra_prompt,
         )
 
-    if vision_mode not in {"auto", "per_image", "multiscreenshot"}:
-        return _build_rule_fallback(
-            rule_result,
-            existing_images,
-            f"Unsupported vision mode: {vision_mode}",
-            needs_manual_review=True,
-        )
-
-    per_image_results = []
-    per_image_errors = []
-    for image_path in existing_images:
-        try:
-            result = _judge_single_image(
-                image_path=image_path,
-                task_prompt=task_prompt,
-                rule_result=rule_result,
-                final_action=final_action,
-                args=args,
-            )
-            result["image"] = os.path.basename(image_path)
-            per_image_results.append(result)
-        except Exception as exc:
-            per_image_errors.append({"image": os.path.basename(image_path), "error": str(exc)})
-
-    if not per_image_results:
-        return _build_rule_fallback(
-            rule_result,
-            existing_images,
-            f"Per-image judge failed for every screenshot: {json.dumps(per_image_errors, ensure_ascii=False)}",
-            needs_manual_review=True,
-        )
-
-    output = _aggregate_per_image_results(per_image_results, existing_images)
-    if per_image_errors:
-        output["per_image_errors"] = per_image_errors
-    return output
+    return {
+        "complete": vision_result["status"] == "success",
+        "complete_source": "vision_tail_images",
+        "vision_status": vision_result["status"],
+        "vision_reason": vision_result["reason"],
+        "vision_confidence": vision_result["confidence"],
+        "used_images": [os.path.basename(path) for path in selected_images],
+        "evidence_images": vision_result["evidence_images"],
+        "operation_judge_prompt": vision_result["judge_prompt"],
+        "operation_judge_response": vision_result["raw_response"],
+        "operation_extra_prompt": vision_result["extra_prompt"],
+        "needs_manual_review": False,
+    }

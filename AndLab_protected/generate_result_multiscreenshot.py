@@ -2,7 +2,8 @@
 Multi-screenshot evaluator for AndLab task results.
 
 This script extends the original result generation flow with two behaviors:
-1. `operation` tasks can use multi-screenshot LLM judging to overwrite `complete`.
+1. `operation` tasks can send the last N chronological before/end screenshots
+   to a vision model in one request and overwrite `complete`.
 2. `query_detect` tasks keep the original text-answer judging logic, but also
    record the judge prompt / response / reason into the output result.
 
@@ -10,9 +11,11 @@ Common usage:
     python generate_result_multiscreenshot.py \
       --input_folder logs/evaluation \
       --target_dirs test_gliner \
-      --judge_model Qwen3-VL-235B-A22B-Thinking \
+      --operation_judge_model Qwen2.5-VL-72B-Instruct \
+      --query_judge_model Qwen3-VL-235B-A22B-Thinking \
       --api_base https://your-openai-compatible-endpoint/v1 \
       --api_key <your-api-key> \
+      --tail_image_count 8 \
       --max_workers 8 \
       --evaluate_metric_type both
 
@@ -24,14 +27,13 @@ Important arguments:
     --target_dirs
         One or more run directory names under `input_folder`.
     --judge_model
-        Judge model name. Supports OpenAI-compatible third-party endpoints.
+        Fallback judge model name used by both task types unless a type-specific model is provided.
+    --operation_judge_model / --query_judge_model
+        Optional type-specific judge model names for `operation` and `query_detect`.
     --api_base / --api_key
-        Base URL and key for the judge model endpoint.
-    --vision_mode
-        How `operation` tasks use screenshots:
-        `auto` / `multiscreenshot` / `per_image`.
-    --max_images_per_request
-        Upper bound of images sent in a single vision request.
+        Shared base URL and key for all judge model requests.
+    --tail_image_count
+        Only send the last N ordered before/end screenshots for `operation`.
     --max_workers
         Task evaluation parallelism. Default is 1, which is serial.
     --evaluate_metric_type
@@ -72,9 +74,11 @@ def parse_args():
             "  python generate_result_multiscreenshot.py \\\n"
             "    --input_folder logs/evaluation \\\n"
             "    --target_dirs test_gliner \\\n"
-            "    --judge_model Qwen3-VL-235B-A22B-Thinking \\\n"
+            "    --operation_judge_model Qwen2.5-VL-72B-Instruct \\\n"
+            "    --query_judge_model Qwen3-VL-235B-A22B-Thinking \\\n"
             "    --api_base https://your-openai-compatible-endpoint/v1 \\\n"
             "    --api_key <your-api-key> \\\n"
+            "    --tail_image_count 8 \\\n"
             "    --max_workers 8 \\\n"
             "    --evaluate_metric_type both"
         ),
@@ -95,7 +99,19 @@ def parse_args():
         "--judge_model",
         type=str,
         default="gpt-4o",
-        help="用于 query_detect 判题和 operation 多图判定的 judge model 名称",
+        help="默认 judge model；若未提供按类别区分的模型，则 operation 和 query_detect 都使用它",
+    )
+    parser.add_argument(
+        "--operation_judge_model",
+        type=str,
+        default="",
+        help="operation 多图判定使用的 judge model；不传则回退到 --judge_model",
+    )
+    parser.add_argument(
+        "--query_judge_model",
+        type=str,
+        default="",
+        help="query_detect 判题使用的 judge model；不传则回退到 --judge_model",
     )
     parser.add_argument(
         "--api_base",
@@ -117,22 +133,10 @@ def parse_args():
         help="只评估指定的运行目录名；不传则扫描 input_folder 下全部目录",
     )
     parser.add_argument(
-        "--vision_mode",
-        type=str,
-        choices=["auto", "multiscreenshot", "per_image"],
-        default="auto",
-        help=(
-            "operation 任务的截图判定模式:\n"
-            "auto: 先尝试多图/分批，再回退逐图\n"
-            "multiscreenshot: 只用多图链路\n"
-            "per_image: 直接逐图判断"
-        ),
-    )
-    parser.add_argument(
-        "--max_images_per_request",
+        "--tail_image_count",
         type=int,
-        default=20,
-        help="单次发给视觉模型的最大图片数；默认 20，避免把 25 张图写死到接口限制里",
+        default=8,
+        help="operation 任务只发送按时间顺序排列后的最后 N 张 before/end 截图；不足 N 张则全部发送",
     )
     parser.add_argument(
         "--max_workers",
@@ -148,6 +152,18 @@ def parse_args():
         help="选择要评估的 metric_type；默认 both 表示 operation 和 query_detect 都评估",
     )
     return parser.parse_args()
+
+
+def _build_args_with_judge_model(args, judge_model: str):
+    return argparse.Namespace(**{**vars(args), "judge_model": judge_model})
+
+
+def _get_judge_model_for_metric_type(args, metric_type: str) -> str:
+    if metric_type == "operation":
+        return getattr(args, "operation_judge_model", "") or args.judge_model
+    if metric_type == "query_detect":
+        return getattr(args, "query_judge_model", "") or args.judge_model
+    return args.judge_model
 
 
 class MultiScreenshotEvaluationTask(Evaluation_Task):
@@ -208,8 +224,8 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
             "rule_complete_before_vision": result.get("rule_complete_before_vision"),
             "vision_status": result.get("vision_status"),
             "vision_reason": result.get("vision_reason"),
+            "operation_extra_prompt": result.get("operation_extra_prompt"),
             "used_images": result.get("used_images", []),
-            "conflict": result.get("conflict", False),
             "needs_manual_review": result.get("needs_manual_review", False),
         }
 
@@ -309,6 +325,9 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
         metric_type = self.config.metrics_type[task_id]
         if not self._should_evaluate_metric_type(metric_type):
             return
+        judge_args = _build_args_with_judge_model(
+            self.args, _get_judge_model_for_metric_type(self.args, metric_type)
+        )
         metric = self.metrics[task_id](self.args)
         metric.token_mapping = None
         final_result = {"complete": False}
@@ -408,11 +427,12 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
             rule_result = dict(final_result)
             rule_complete = rule_result.get("complete", False)
             vision_result = judge_complete_with_multiscreenshot(
+                task_id=task_id,
                 image_paths=ordered_images,
                 task_prompt=original_task_prompt,
                 rule_result=rule_result,
                 final_action=last_action_context,
-                args=self.args,
+                args=judge_args,
             )
 
             final_result["rule_complete_before_vision"] = rule_complete
@@ -422,7 +442,7 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
                     continue
                 final_result[key] = value
         elif metric_type == "query_detect":
-            query_detect_judge_details = self._build_query_detect_judge_details(metric, final_result_line, self.args)
+            query_detect_judge_details = self._build_query_detect_judge_details(metric, final_result_line, judge_args)
             if query_detect_judge_details is not None:
                 final_result.update(query_detect_judge_details)
 
@@ -493,7 +513,10 @@ def evaluate_input_dir(input_dir, task_yamls, create_time, args):
 
 def main():
     args = parse_args()
-    detect_answer_test(args)
+    query_test_args = _build_args_with_judge_model(
+        args, _get_judge_model_for_metric_type(args, "query_detect")
+    )
+    detect_answer_test(query_test_args)
 
     task_yamls = os.listdir("evaluation/config")
     task_yamls = ["evaluation/config/" + name for name in task_yamls if name.endswith(".yaml")]

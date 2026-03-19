@@ -3,7 +3,21 @@ import re
 import os
 import json
 import base64
-import backoff
+try:
+    import backoff
+except ImportError:
+    class _BackoffShim:
+        @staticmethod
+        def expo(*args, **kwargs):
+            return None
+
+        @staticmethod
+        def on_exception(*args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+    backoff = _BackoffShim()
 from openai import OpenAI
 try:
     from zhipuai import ZhipuAI
