@@ -10,14 +10,12 @@ from .layer import (
     PrivacyProtectionLayer,
     get_privacy_layer,
     set_privacy_layer,
-    cloud_agent_compute_with_tokens,
 )
 
 __all__ = [
     "PrivacyProtectionLayer",
     "get_privacy_layer",
     "set_privacy_layer",
-    "cloud_agent_compute_with_tokens",
     "GLINER_PII_LABELS",
     "GLINER_DETECTION_THRESHOLD",
     "PII_FIXED_PLACEHOLDER",

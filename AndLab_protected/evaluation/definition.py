@@ -33,15 +33,27 @@ def encode_image(image_path):
 
 
 def get_code_snippet(content):
-    code = re.search(r'```.*?([\s\S]+?)```', content)
-    if code is None:
-        return content
-        # print(content)
-        # raise RuntimeError("No available code found!")
-    code = code.group(1).strip()
-    code = code.split("\n")[-1]
+    code_block = re.search(r"```(?:python)?\s*([\s\S]+?)```", content)
+    if code_block is not None:
+        content = code_block.group(1).strip()
 
-    return code
+    action_match = re.search(r"Action:\s*([\s\S]+)", content)
+    if action_match is not None:
+        content = action_match.group(1).strip()
+
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if not lines:
+        return content.strip()
+
+    for line in lines:
+        if line.startswith(("do(", "finish(", "tap(", "type(", "swipe(", "long_press(", "press_back(", "press_home(", "press_enter(", "wait(", "launch(")):
+            return line
+
+    for line in reversed(lines):
+        if "(" in line and ")" in line:
+            return line
+
+    return lines[-1]
 
 
 def handle_backoff(details):

@@ -5,7 +5,6 @@ from typing import Dict, Any
 from tqdm import tqdm
 import json
 import os
-import re
 import jsonlines
 import numpy as np
 from PIL import Image
@@ -13,18 +12,11 @@ from PIL import Image
 from evaluation.definition import *
 from evaluation.utils import *
 from utils_mobile.utils import get_compressed_xml
-from utils_mobile.privacy_protection import PrivacyProtectionLayer, get_privacy_layer
 
 
 T_INPUT = TypeVar('T_INPUT')
 T_OUTPUT = TypeVar('T_OUTPUT')
 T_TARGET = TypeVar('T_TARGET')
-
-TOKEN_PATTERN = re.compile(r"\[?([A-Z_]+#[A-Za-z0-9]+)\]?")
-
-
-
-
 
 def dump_xml(xml_path):
     xml_compressed = get_compressed_xml(xml_path)
@@ -33,110 +25,9 @@ def dump_xml(xml_path):
     return json.loads(xml_compressed)
 
 
-def deanonymize_xml_tree(xml_tree, token_mapping):
-    """
-    递归地将 XML 树中的匿名 token 还原为真实值。
-    
-    Args:
-        xml_tree: XML 压缩后的树结构（字典）
-        token_mapping: token 到真实值的映射字典
-    
-    Returns:
-        还原后的 XML 树
-    """
-    if not token_mapping or not xml_tree:
-        return xml_tree
-    
-    if isinstance(xml_tree, dict):
-        result = {}
-        for key, value in xml_tree.items():
-            # 还原 key 中的 token
-            deanonymized_key = deanonymize_xml_tree(key, token_mapping)
-            # 递归还原 value
-            deanonymized_value = deanonymize_xml_tree(value, token_mapping)
-            result[deanonymized_key] = deanonymized_value
-        return result
-    elif isinstance(xml_tree, list):
-        return [deanonymize_xml_tree(item, token_mapping) for item in xml_tree]
-    elif isinstance(xml_tree, str):
-        # 对字符串进行 token 还原
-        result = xml_tree
-        # 按 token 长度从长到短排序，避免部分匹配问题
-        sorted_tokens = sorted(token_mapping.items(), key=lambda x: len(x[0]), reverse=True)
-        for token, real_value in sorted_tokens:
-            if isinstance(token, str) and isinstance(real_value, str):
-                result = result.replace(token, real_value)
-        return PrivacyProtectionLayer.deanonymize_fixed_placeholder_in_text(result, token_mapping)
-    else:
-        return xml_tree
-
-
-def load_task_token_mapping(task_trace_root: str) -> Dict[str, str]:
-    """
-    Load task-scoped token mapping even if the privacy layer is not currently enabled.
-    """
-    privacy_layer = get_privacy_layer()
-    token_mapping_loaded = privacy_layer.load_token_mapping(task_trace_root)
-    if token_mapping_loaded and privacy_layer.token_to_real:
-        return privacy_layer.token_to_real.copy()
-
-    mapping_file = os.path.join(task_trace_root, "privacy_token_mapping.json")
-    if not os.path.exists(mapping_file):
-        return {}
-
-    try:
-        with open(mapping_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        token_to_real = data.get("token_to_real", {})
-        if isinstance(token_to_real, dict):
-            return {
-                token: real_value
-                for token, real_value in token_to_real.items()
-                if isinstance(token, str) and isinstance(real_value, str)
-            }
-    except Exception:
-        return {}
-
-    return {}
-
-
-def deanonymize_text_content(text: Any, token_mapping: Optional[Dict[str, str]] = None) -> Any:
-    """
-    Replace anonymized tokens in free-form text with real values.
-    Handles both `TOKEN#abc12` and `[TOKEN#abc12]` forms.
-    """
-    if not isinstance(text, str):
-        return text
-
-    result = text
-    mapping = token_mapping or {}
-
-    sorted_items = sorted(mapping.items(), key=lambda x: len(x[0]), reverse=True)
-    for token, real_value in sorted_items:
-        if not isinstance(token, str) or not isinstance(real_value, str):
-            continue
-        result = result.replace(f"[{token}]", real_value)
-        result = result.replace(token, real_value)
-
-    privacy_layer = get_privacy_layer()
-    if getattr(privacy_layer, "token_to_real", None):
-        result = privacy_layer.convert_token_to_real(result)
-
-    def replace_unresolved(match):
-        token = match.group(1)
-        real_value = mapping.get(token)
-        if real_value is None and getattr(privacy_layer, "token_to_real", None):
-            real_value = privacy_layer.token_to_real.get(token)
-        return real_value if isinstance(real_value, str) else match.group(0)
-
-    result = TOKEN_PATTERN.sub(replace_unresolved, result)
-    return PrivacyProtectionLayer.deanonymize_fixed_placeholder_in_text(result, mapping)
-
-
 def extract_unresolved_tokens(text: Any) -> List[str]:
-    if not isinstance(text, str):
-        return []
-    return sorted(set(match.group(1) for match in TOKEN_PATTERN.finditer(text)))
+    del text
+    return []
 
 
 def calculate_partial_acc(dict):
@@ -225,8 +116,6 @@ class Evaluation_Task(Generic[T_INPUT, T_OUTPUT, T_TARGET]):
 
         task_id = task.get('task_id')
         metric = self.metrics[task_id](self.args)
-        # Initialize token_mapping attribute for thread-safe concurrent evaluation
-        metric.token_mapping = None
         final_result = {"complete": False}
 
         if task_id not in self.traces:
@@ -235,20 +124,6 @@ class Evaluation_Task(Generic[T_INPUT, T_OUTPUT, T_TARGET]):
 
         if not os.path.exists(self.traces[task_id]['trace_file']):
             return
-
-        # Load token mapping for this specific task if privacy protection was enabled
-        # Each task has its own token mapping because the same real value may be
-        # anonymized to different tokens in different tasks
-        # IMPORTANT: Copy mapping to local variable to avoid race conditions in concurrent evaluation
-        task_trace_root = self.traces[task_id]['trace_root']
-        local_token_to_real = load_task_token_mapping(task_trace_root)
-        
-        # Store mapping in metric instance so check_answer can use it
-        # This avoids race conditions when multiple tasks evaluate concurrently
-        if local_token_to_real:
-            metric.token_mapping = local_token_to_real
-        else:
-            metric.token_mapping = None
 
         all_operation_trace = []
         all_images = []
@@ -288,9 +163,6 @@ class Evaluation_Task(Generic[T_INPUT, T_OUTPUT, T_TARGET]):
                     continue
 
                 xml_compressed = dump_xml(xml_path)
-                # 如果启用了隐私保护，将 XML 树中的匿名 token 还原为真实值
-                if xml_compressed is not None and local_token_to_real:
-                    xml_compressed = deanonymize_xml_tree(xml_compressed, local_token_to_real)
                 try:
                     result = metric.judge(xml_compressed, line)
                     all_operation_trace.append(line)
@@ -340,12 +212,6 @@ class Evaluation_Task(Generic[T_INPUT, T_OUTPUT, T_TARGET]):
             self.add_metrics(task, all_operation_trace, all_images, final_result)
 
         self.save_single(task, final_result)
-        
-        # Clear token mapping after evaluation to avoid mixing mappings from different tasks
-        if local_token_to_real:
-            privacy_layer = get_privacy_layer()
-            privacy_layer.token_to_real.clear()
-            privacy_layer.real_to_token.clear()
 
     def evaluate_old(self) -> Dict[str, Any]:
         for task in self.task_list:
@@ -502,10 +368,7 @@ class SingleTask():
                 model_answer = line["parsed_action"]["kwargs"]["message"]
             else:
                 model_answer = line["parsed_action"]["input"]
-
-            question = deanonymize_text_content(question, getattr(self, 'token_mapping', None))
-            model_answer = deanonymize_text_content(model_answer, getattr(self, 'token_mapping', None))
-            ground_truth = deanonymize_text_content(self.final_ground_truth, getattr(self, 'token_mapping', None))
+            ground_truth = self.final_ground_truth
 
             if detect_answer(question, model_answer, ground_truth, self.args):
                 return True

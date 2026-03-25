@@ -1,32 +1,24 @@
 """
-Statistics and persistence mixin for the Privacy Protection Layer.
+Statistics mixin for the Privacy Protection Layer.
 
-Provides recording of anonymization statistics, saving/loading token mappings,
-and summary generation for evaluation.
+Provides recording and persistence of anonymization statistics.
 """
 
 from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional
-
-from .constants import PII_FIXED_PLACEHOLDER
+from typing import Any, Dict, List
 
 
 class StatsMixin:
     """
-    Mixin that provides statistics recording and token mapping persistence.
+    Mixin that provides anonymization statistics persistence.
 
     Expects the host class to have these instance attributes:
     - enabled: bool
     - _anonymization_stats: List[Dict[str, Any]]
     - _task_dir: Optional[str]
-    - token_to_real: Dict[str, str]
-    - real_to_token: Dict[str, str]
-    - real_to_entity_type: Dict[str, str]
-    - whitelist: set
-    - replacement_style: str (optional; defaults handled via getattr when saving)
     """
 
     def _record_statistics(self, type: str, original_length: int, anonymized_chars_count: int, num_tokens: int):
@@ -69,7 +61,6 @@ class StatsMixin:
     def save_stats(self):
         """
         Save anonymization statistics to a JSON file in the task directory.
-        Also saves token mappings for later evaluation.
         """
         if not self._task_dir:
             return
@@ -89,70 +80,6 @@ class StatsMixin:
                 print(f"[PrivacyProtection] Failed to save statistics: {e}")
             finally:
                 self._anonymization_stats.clear()
-        
-        if self.enabled and self.token_to_real:
-            self.save_token_mapping()
-            self.token_to_real.clear()
-            self.real_to_token.clear()
-            self.real_to_entity_type.clear()
-            self.whitelist.clear()
-
-    def save_token_mapping(self):
-        """
-        Save token-to-real mapping to a JSON file in the task directory.
-        This is important for evaluation where we need to convert anonymized tokens
-        back to real values for comparison with golden answers.
-        Also saves entity type information.
-        """
-        if not self._task_dir:
-            return
-        
-        mapping_file = os.path.join(self._task_dir, "privacy_token_mapping.json")
-        try:
-            payload: Dict[str, Any] = {
-                "task_dir": self._task_dir,
-                "token_to_real": self.token_to_real,
-                "real_to_token": self.real_to_token,
-                "real_to_entity_type": self.real_to_entity_type,
-                "replacement_style": getattr(self, "replacement_style", "hash_token"),
-                "fixed_placeholder_literal": PII_FIXED_PLACEHOLDER,
-            }
-            with open(mapping_file, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            print(f"[PrivacyProtection] Token mapping saved to {mapping_file}")
-        except Exception as e:
-            print(f"[PrivacyProtection] Failed to save token mapping: {e}")
-
-    def load_token_mapping(self, task_dir: str):
-        """
-        Load token-to-real mapping from a JSON file in the task directory.
-        This is used during evaluation to convert anonymized tokens back to real values.
-        Also loads entity type information.
-        
-        Args:
-            task_dir: Path to the task directory containing the mapping file.
-        
-        Returns:
-            True if mapping was loaded successfully, False otherwise.
-        """
-        if not self.enabled:
-            return False
-        
-        mapping_file = os.path.join(task_dir, "privacy_token_mapping.json")
-        if not os.path.exists(mapping_file):
-            return False
-        
-        try:
-            with open(mapping_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                self.token_to_real = data.get("token_to_real", {})
-                self.real_to_token = data.get("real_to_token", {})
-                self.real_to_entity_type = data.get("real_to_entity_type", {})
-            print(f"[PrivacyProtection] Token mapping loaded from {mapping_file} ({len(self.token_to_real)} tokens)")
-            return True
-        except Exception as e:
-            print(f"[PrivacyProtection] Failed to load token mapping: {e}")
-            return False
 
     def get_stats_summary(self) -> Dict[str, Any]:
         """

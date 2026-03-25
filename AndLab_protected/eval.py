@@ -151,6 +151,7 @@ if __name__ == '__main__':
     arg_parser.add_argument("--task_id", nargs="+", default=None)
     arg_parser.add_argument("--debug", action="store_true", default=False)
     arg_parser.add_argument("--app", nargs="+", default=None)
+    arg_parser.add_argument("-p", "--parallel", type=int, default=1, help="Number of parallel tasks to run (default: 1 for serial execution)")
 
     args = arg_parser.parse_args()
     with open(args.config, "r") as file:
@@ -219,7 +220,15 @@ if __name__ == '__main__':
         raise AttributeError(f"Class {autotask_class} not found. Please check the class name in the config file.")
 
     Auto_Test = class_(single_config.subdir_config(args.name))
-    Auto_Test.run_serial(all_task_start_info)
+    
+    # Support parallel execution
+    if args.parallel > 1:
+        print(f"[Parallel] Running {len(all_task_start_info)} tasks with {args.parallel} parallel workers")
+        from evaluation.parallel import parallel_worker
+        parallel_worker(class_, single_config.subdir_config(args.name), args.parallel, all_task_start_info)
+    else:
+        # Serial execution (default)
+        Auto_Test.run_serial(all_task_start_info)
     
     # Calculate and save overall anonymization statistics
     task_dir = os.path.abspath(single_config.subdir_config(args.name).save_dir)

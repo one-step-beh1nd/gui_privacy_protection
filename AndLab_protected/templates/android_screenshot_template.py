@@ -340,37 +340,7 @@ Pauses the execution for the given number of seconds. Default is 5 second.
 Ends the task and provides the final output. You can return the final output of the task as a string.
 Example: finish("Task completed")
 
-Whenever you pass literal values (text, IDs, etc.) into any of the functions above, remember that the values you observe in the UI might either be the real values or anonymized tokens such as "phone_number#0abc1". These tokens are placeholders that protect the true data. If you need to operate on the underlying real value, supply the anonymized token itself as the function argument and the local runtime will automatically translate it back to the real value for you—never try to guess or reconstruct the plaintext on your own.
-
-9. cloud_agent_compute_with_tokens(anon_tokens: List[str], compute_instruction: str, usage_reason: str)
-
-Requests a privacy-preserving semantic computation on sensitive values referenced by anonymized tokens.
-
-This function sends the anonymized tokens and the intended computation to a local privacy controller, which will:
-(1) map the anonymized tokens back to their real values locally,
-(2) check whether the requested computation is consistent with the current task and justified by the usage reason,
-(3) execute the computation if approved, and
-(4) return the result in a structured form.
-
-Example:
-cloud_agent_compute_with_tokens(
-    ["phone_number#0abc1"],
-    "check whether this phone number is already in the contact list",
-    "need to avoid adding a duplicate contact"
-)
-
-Arguments:
-- anon_tokens (List[str]): The anonymized tokens observed in the UI that refer to sensitive real values.
-- compute_instruction (str): A brief description of the semantic computation to be performed.
-- usage_reason (str): A brief explanation of why this computation is necessary to accomplish the current task.
-
-Returns:
-A dictionary with the following fields:
-- approved (bool): Whether the computation request is approved.
-- decision_reason (str): The reason for approval or rejection.
-- result (any): The computation result if approved, otherwise None.
-- missing_tokens (List[str]): Tokens that were required but not provided.
-- raw_llm_output (str): The raw output produced by the internal model during the computation.
+Whenever you pass literal values (text, IDs, etc.) into any of the functions above, remember that sensitive values in the UI may appear as the fixed placeholder "[Privacy Information]". Treat it as a privacy-preserving mask, do not guess the hidden plaintext, and complete the task using only the information that is actually visible on the current screen.
 
 Now, given the following labeled screenshot, you need to think and call the function needed to proceed with the task. 
 Your output should include only action part in the given format:
@@ -397,7 +367,7 @@ def do(action, element=None, **kwargs):
 
     Args:
         action (str): Specifies the action to be performed. Valid options are:
-                      "Tap", "Type", "Swipe", "Long Press", "Home", "Back", "Enter", "Wait", "Launch", "Call_API".
+                      "Tap", "Type", "Swipe", "Long Press", "Home", "Back", "Enter", "Wait", "Launch".
         element (list, optional): Defines the screen area or starting point for the action.
                                   - For "Tap" and "Long Press", provide coordinates [x1, y1, x2, y2]
                                     to define a rectangle from top-left (x1, y1) to bottom-right (x2, y2).
@@ -411,37 +381,6 @@ def do(action, element=None, **kwargs):
         dist (str, optional): The distance of the swipe, with options "long", "medium", "short".
                               Defaults to "medium". Required if action is "Swipe" and direction is specified.
         app (str, optional): The name of the app to launch. Required only if action is "Launch".
-        instruction (str, optional): Additional instructions for the action. Required only if action is "Call_API".
-            - For privacy-preserving semantic computation over **local** sensitive data,
-              you must set `instruction` to a single Python-style function call:
-              `cloud_agent_compute_with_tokens(anon_tokens=[...], compute_instruction="...", usage_reason="...")`.
-              You are only allowed to specify:
-                  * anon_tokens: List[str]  # the anonymized tokens you see, e.g. "phone_number#0abc1"
-                  * compute_instruction: str  # what you want to compute semantically
-                  * usage_reason: str  # why this computation is necessary for the final task
-              You MUST NOT specify any local LLM hyper-parameters (e.g. temperature, do_sample, top_p);
-              these are fixed and controlled locally on the device.
-
-              The local device will interpret this call and execute a privacy layer interface:
-
-                  cloud_agent_compute_with_tokens(
-                      anon_tokens: List[str],
-                      compute_instruction: str,
-                      usage_reason: str
-                  ) -> Dict[str, Any]
-
-              It returns a JSON-like object with the following structure:
-
-                  {
-                    "approved": bool,              # whether the data usage is approved
-                    "decision_reason": str,        # why it was approved/denied (no raw plaintext)
-                    "result": Optional[str],       # high-level semantic result when approved, otherwise ""
-                    "missing_tokens": List[str],   # tokens that had no local mapping
-                  }
-
-              This result will be appended to the conversation in the next turn as:
-                  "Query: <your function call>\nResponse: <JSON result>"
-        with_screen_info (bool, optional): Whether to include screen information when call api. Defaults to True. Required only if action is "Call_API".
 
     Returns:
         None. The device state or the foreground application state will be updated after executing the action.

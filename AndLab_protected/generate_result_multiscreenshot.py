@@ -56,15 +56,11 @@ from evaluation.definition import detect_answer_test, detect_answer_with_details
 from evaluation.multiscreenshot_judge import judge_complete_with_multiscreenshot
 from evaluation.task import (
     Evaluation_Task,
-    deanonymize_text_content,
-    deanonymize_xml_tree,
     dump_xml,
     extract_unresolved_tokens,
-    load_task_token_mapping,
 )
 from generate_result import find_all_task_files, find_all_traces_files
 from recalculate_metrics import calculate_average_metrics
-from utils_mobile.privacy_protection import get_privacy_layer
 
 
 def parse_args():
@@ -305,9 +301,7 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
             else:
                 model_answer = parsed_action["input"]
 
-            question = deanonymize_text_content(question, getattr(metric, "token_mapping", None))
-            model_answer = deanonymize_text_content(model_answer, getattr(metric, "token_mapping", None))
-            ground_truth = deanonymize_text_content(metric.final_ground_truth, getattr(metric, "token_mapping", None))
+            ground_truth = metric.final_ground_truth
             judge_details = detect_answer_with_details(question, model_answer, ground_truth, args)
             unresolved_tokens = {
                 "question": extract_unresolved_tokens(question),
@@ -373,7 +367,6 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
             self.args, _get_judge_model_for_metric_type(self.args, metric_type)
         )
         metric = self.metrics[task_id](self.args)
-        metric.token_mapping = None
         final_result = {"complete": False}
 
         if task_id not in self.traces:
@@ -382,11 +375,6 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
 
         if not os.path.exists(self.traces[task_id]["trace_file"]):
             return
-
-        task_trace_root = self.traces[task_id]["trace_root"]
-        local_token_to_real = load_task_token_mapping(task_trace_root)
-        if local_token_to_real:
-            metric.token_mapping = local_token_to_real
 
         all_operation_trace = []
         original_task_prompt = None
@@ -439,8 +427,6 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
                     continue
 
                 xml_compressed = dump_xml(xml_path)
-                if xml_compressed is not None and local_token_to_real:
-                    xml_compressed = deanonymize_xml_tree(xml_compressed, local_token_to_real)
 
                 try:
                     result = metric.judge(xml_compressed, line)
@@ -499,11 +485,6 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
             self.add_metrics(task, all_operation_trace, before_images, final_result)
 
         self.save_single(task, final_result)
-
-        if local_token_to_real:
-            privacy_layer = get_privacy_layer()
-            privacy_layer.token_to_real.clear()
-            privacy_layer.real_to_token.clear()
 
 
 def evaluate_all_tasks(tasks: List[Evaluation_Task], max_workers: int):

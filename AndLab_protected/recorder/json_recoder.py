@@ -249,20 +249,12 @@ class JSONRecorder:
         
         xml_compressed = get_compressed_xml(xml_path, version=self.xml_compressed_version)
         
-        # Apply privacy protection: mask sensitive information in compressed XML only
-        # IMPORTANT: This uses the same PrivacyProtectionLayer instance that was used for
-        # anonymizing the instruction, so entities that appeared in the instruction will
-        # be mapped to the same tokens (via _get_or_create_token which checks real_to_token first).
+        # Apply privacy protection to compressed XML only.
         privacy_layer = get_privacy_layer()
         if privacy_layer.enabled and xml_compressed:
             try:
-                # Only mask the compressed XML (not the original XML)
-                # identify_and_mask_xml is designed for compressed XML format
-                # It will reuse tokens from instruction anonymization if the same entities are found
-                masked_xml_compressed, new_tokens = privacy_layer.identify_and_mask_xml(xml_compressed)
+                masked_xml_compressed, _ = privacy_layer.identify_and_mask_xml(xml_compressed)
                 xml_compressed = masked_xml_compressed
-                if new_tokens:
-                    print(f"[PrivacyProtection] XML anonymization: {len(new_tokens)} new tokens created")
             except Exception as e:
                 print(f"Warning: Failed to apply privacy protection to compressed XML: {e}")
         elif not privacy_layer.enabled:
@@ -304,15 +296,6 @@ class JSONRecorder:
             return
         self.contents[-1]['parsed_action'] = exe_res
         self.history.append({"role": "user", "content": "** XML **"})
-        if exe_res["action"] == "Call_API":
-            call_instruction = exe_res["kwargs"]["instruction"]
-            call_response = exe_res["kwargs"]["response"]
-            # 如果 response 是结构化对象，则序列化为 JSON 方便云端 agent 在下一轮阅读
-            if isinstance(call_response, (dict, list)):
-                call_response_str = json.dumps(call_response, ensure_ascii=False)
-            else:
-                call_response_str = str(call_response)
-            rsp = rsp + f"\n\nQuery:{call_instruction}\nResponse:{call_response_str}"
         self.history.append({"role": "assistant", "content": rsp})
         self.contents[-1]["current_response"] = rsp
         with jsonlines.open(self.trace_file_path, 'a') as f:

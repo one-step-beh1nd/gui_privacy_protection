@@ -1,4 +1,3 @@
-import ast
 import inspect
 import json
 import re
@@ -7,12 +6,64 @@ from functools import partial
 
 from templates.packages import find_package
 from .utils import call_dino, plot_bbox
-from utils_mobile.privacy_protection import cloud_agent_compute_with_tokens
 
 
 def remove_leading_zeros_in_string(s):
     # 使用正则表达式匹配列表中的每个数值并去除前导零
     return re.sub(r'\b0+(\d)', r'\1', s)
+
+
+def _extract_action_call(text: str) -> str:
+    candidate = (text or "").strip()
+    if not candidate:
+        return candidate
+
+    action_idx = candidate.find("Action:")
+    if action_idx != -1:
+        candidate = candidate[action_idx + len("Action:"):].strip()
+
+    lines = [line.strip() for line in candidate.splitlines() if line.strip()]
+    if not lines:
+        return candidate
+
+    joined = " ".join(lines)
+    start = None
+    for func_name in ("do(", "finish(", "tap(", "type(", "swipe(", "long_press(", "press_back(", "press_home(", "press_enter(", "wait(", "launch("):
+        idx = joined.find(func_name)
+        if idx != -1 and (start is None or idx < start):
+            start = idx
+    if start is None:
+        return lines[-1]
+
+    joined = joined[start:]
+    depth = 0
+    in_string = False
+    quote_char = ""
+    escaped = False
+
+    for idx, ch in enumerate(joined):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote_char:
+                in_string = False
+            continue
+
+        if ch in ("'", '"'):
+            in_string = True
+            quote_char = ch
+            continue
+        if ch == "(":
+            depth += 1
+            continue
+        if ch == ")":
+            depth -= 1
+            if depth == 0:
+                return joined[: idx + 1]
+
+    return joined
 
 
 class TextOnlyExecutor:
@@ -35,60 +86,6 @@ class TextOnlyExecutor:
         # self.glm4_key = config.glm4_key
 
         # self.device_pixel_ratio = self.page.evaluate("window.devicePixelRatio")
-
-    # ------------------------------------------------------------------ #
-    # Helpers for parsing cloud_agent_compute_with_tokens(...) calls
-    # ------------------------------------------------------------------ #
-    def _parse_cloud_agent_compute_instruction(self, expr: str):
-        """
-        Parse an expression like:
-        cloud_agent_compute_with_tokens(
-            anon_tokens=["phone_number#0abc1"],
-            compute_instruction="...",
-            usage_reason="..."
-        )
-
-        Only keyword arguments are supported. Any extra parameters (e.g.
-        temperature, do_sample, model_dir) will be ignored so that the
-        cloud agent cannot control local LLM hyper-parameters.
-        """
-        try:
-            tree = ast.parse(expr.strip(), mode="eval")
-        except SyntaxError as exc:
-            raise ValueError(f"Invalid cloud_agent_compute_with_tokens expression: {exc}") from exc
-
-        if not isinstance(tree, ast.Expression) or not isinstance(tree.body, ast.Call):
-            raise ValueError("Instruction must be a single function call expression.")
-
-        call = tree.body
-        func_name = ""
-        if isinstance(call.func, ast.Name):
-            func_name = call.func.id
-        elif isinstance(call.func, ast.Attribute):
-            func_name = call.func.attr
-
-        if func_name != "cloud_agent_compute_with_tokens":
-            raise ValueError("Only cloud_agent_compute_with_tokens(...) is supported in Call_API.")
-
-        kwargs = {}
-        for kw in call.keywords:
-            if kw.arg is None:
-                continue
-            # 只允许云端 agent 指定这三个参数，忽略其他参数以防止控制本地 LLM 超参数
-            if kw.arg not in {"anon_tokens", "compute_instruction", "usage_reason"}:
-                continue
-            kwargs[kw.arg] = ast.literal_eval(kw.value)
-
-        anon_tokens = kwargs.get("anon_tokens") or []
-        compute_instruction = kwargs.get("compute_instruction") or ""
-        usage_reason = kwargs.get("usage_reason") or ""
-
-        if not isinstance(anon_tokens, list) or not all(isinstance(t, str) for t in anon_tokens):
-            raise ValueError("anon_tokens must be a list of strings.")
-        if not isinstance(compute_instruction, str) or not isinstance(usage_reason, str):
-            raise ValueError("compute_instruction and usage_reason must be strings.")
-
-        return anon_tokens, compute_instruction, usage_reason
 
     def __get_current_status__(self):
         page_position = None
@@ -115,13 +112,11 @@ class TextOnlyExecutor:
         local_context = self.__get_class_methods__()
         local_context.update(**{'self': self})
         print(code_snippet.strip())
-        if len(code_snippet.split("\n")) > 1:
-            for code in code_snippet.split("\n"):
-                if "Action: " in code:
-                    code_snippet = code
-                    break
-
-        code = remove_leading_zeros_in_string(code_snippet.strip())
+        code = _extract_action_call(code_snippet)
+        code = remove_leading_zeros_in_string(code.strip())
+        if code.startswith("Action:"):
+            code = code[len("Action:"):].strip()
+        compile(code, "<action>", "exec")
         exec(code, {}, local_context)
         return self.current_return
 
@@ -157,8 +152,7 @@ class TextOnlyExecutor:
         self.controller.save_screenshot(self.current_screenshot)
 
     def do(self, action=None, element=None, **kwargs):
-        assert action in ["Tap", "Type", "Swipe", "Enter", "Home", "Back", "Long Press", "Wait", "Launch",
-                          "Call_API"], "Unsupported Action"
+        assert action in ["Tap", "Type", "Swipe", "Enter", "Home", "Back", "Long Press", "Wait", "Launch"], "Unsupported Action"
         if self.config.is_relative_bbox:
             if element is not None:
                 element = self.modify_relative_bbox(element)
@@ -180,8 +174,6 @@ class TextOnlyExecutor:
             self.wait()
         elif action == "Launch":
             self.launch(**kwargs)
-        elif action == "Call_API":
-            self.call_api(**kwargs)
         else:
             raise NotImplementedError()
         # self.__update_screenshot__() # update screenshot 全部移到recoder内
@@ -285,62 +277,3 @@ class TextOnlyExecutor:
         self.current_return = {"operation": "do", "action": 'Launch',
                                "kwargs": {"package": package}}
 
-    def call_api(self, **kwargs):
-        """
-        Handle `do(action="Call_API", instruction=...)` from the cloud agent.
-
-        We overload this to route privacy-sensitive requests to the local
-        privacy LLM interface cloud_agent_compute_with_tokens() implemented
-        in the privacy layer.
-
-        Expected pattern from the cloud agent:
-
-            do(
-                action="Call_API",
-                instruction="cloud_agent_compute_with_tokens(anon_tokens=[...], compute_instruction='...', usage_reason='...')",
-                with_screen_info=False
-            )
-
-        The agent is **not** allowed to pass any local LLM hyper-parameters
-        (e.g. temperature, top_p, do_sample); such fields are ignored.
-        """
-        assert "instruction" in kwargs, "instruction is required for Call_API"
-        instruction = kwargs.get("instruction")
-
-        # 解析 cloud_agent_compute_with_tokens(...) 形式的表达式
-        anon_tokens, compute_instruction, usage_reason = self._parse_cloud_agent_compute_instruction(instruction)
-
-        # 获取原始用户任务，用于本地隐私审批（只在本地使用，不发给云端）
-        original_task = getattr(self, "original_instruction", None)
-        if original_task is None:
-            # 兼容旧版本：如果执行器上没有 original_instruction，则尝试从 JSONRecorder 里读取
-            try:
-                original_task = getattr(self, "record", None).instruction  # type: ignore[attr-defined]
-            except Exception:
-                original_task = ""
-
-        # 本地大模型路径：优先从 config 读取，其次从环境变量，最后使用一个默认值
-        import os
-
-        model_dir = getattr(self.config, "local_llm_model_dir", None) or os.environ.get(
-            "LOCAL_PRIVACY_LLM_DIR", "./Qwen3-8B"
-        )
-
-        response = cloud_agent_compute_with_tokens(
-            anon_tokens=anon_tokens,
-            compute_instruction=compute_instruction,
-            usage_reason=usage_reason,
-            original_task=original_task or "",
-            model_dir=model_dir,
-        )
-
-        # 结果记录到 current_return，后续在 JSONRecorder.update_after 里拼接到对话中
-        self.current_return = {
-            "operation": "do",
-            "action": "Call_API",
-            "kwargs": {
-                "instruction": instruction,
-                "response": response,
-                "with_screen_info": False,
-            },
-        }

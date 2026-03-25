@@ -7,6 +7,7 @@ capabilities for anonymizing screenshots.
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
@@ -31,6 +32,11 @@ except Exception:  # pragma: no cover - optional dependency
     ImageFont = None  # type: ignore
 
 
+_SHARED_OCR_READER = None
+_OCR_INIT_ATTEMPTED = False
+_OCR_INIT_LOCK = threading.Lock()
+
+
 class ScreenshotMixin:
     """
     Mixin that provides screenshot anonymization capabilities.
@@ -43,9 +49,7 @@ class ScreenshotMixin:
     - mask_text_color: Tuple[int, int, int]
     And these methods (from DetectionMixin / host class):
     - _detect_with_gliner(text) -> List[Tuple[int, int, str]]
-    - _find_registered_entities_in_text(text) -> List[...]
     - _is_in_whitelist(text) -> bool
-    - _get_or_create_token(real_value, category, override_type) -> Tuple[str, bool]
     - _format_masked_surface(internal_token: str, wrap_token: bool) -> str
     - _record_statistics(type, original_length, anonymized_chars_count, num_tokens)
     """
@@ -54,8 +58,15 @@ class ScreenshotMixin:
     # OCR initialization
     # ------------------------------------------------------------------ #
     def _ensure_ocr_reader(self):
-        """Lazy init of EasyOCR reader."""
-        if self._ocr_reader or not self.enabled:
+        """Lazy init of EasyOCR reader, shared across tasks in one process."""
+        global _SHARED_OCR_READER, _OCR_INIT_ATTEMPTED
+
+        if not self.enabled:
+            return
+        if self._ocr_reader is not None:
+            return
+        if _SHARED_OCR_READER is not None:
+            self._ocr_reader = _SHARED_OCR_READER
             return
         if easyocr is None:
             print(
@@ -63,17 +74,30 @@ class ScreenshotMixin:
                 "Skipping screenshot anonymization."
             )
             return
-        try:
-            langs = ["en", "ch_sim"]
+        if _OCR_INIT_ATTEMPTED:
+            return
+
+        with _OCR_INIT_LOCK:
+            if _SHARED_OCR_READER is not None:
+                self._ocr_reader = _SHARED_OCR_READER
+                return
+            if _OCR_INIT_ATTEMPTED:
+                return
+
+            _OCR_INIT_ATTEMPTED = True
             try:
-                import torch as _torch  # type: ignore
-                use_gpu = _torch.cuda.is_available()
-            except Exception:  # pragma: no cover - runtime safety
-                use_gpu = False
-            self._ocr_reader = easyocr.Reader(langs, gpu=use_gpu)
-        except Exception as exc:  # pragma: no cover - runtime safety
-            print(f"[PrivacyProtection] Failed to init EasyOCR: {exc}")
-            self._ocr_reader = None
+                langs = ["en", "ch_sim"]
+                try:
+                    import torch as _torch  # type: ignore
+                    use_gpu = _torch.cuda.is_available()
+                except Exception:  # pragma: no cover - runtime safety
+                    use_gpu = False
+                _SHARED_OCR_READER = easyocr.Reader(langs, gpu=use_gpu)
+                self._ocr_reader = _SHARED_OCR_READER
+            except Exception as exc:  # pragma: no cover - runtime safety
+                print(f"[PrivacyProtection] Failed to init EasyOCR: {exc}")
+                _SHARED_OCR_READER = None
+                self._ocr_reader = None
 
     # ------------------------------------------------------------------ #
     # Image drawing helpers
@@ -258,13 +282,8 @@ class ScreenshotMixin:
         """
         Identify sensitive information in screenshot via OCR and mask/overlay anonymized tokens.
         
-        New logic:
-        1. 将OCR文本块分段，每段不超过500字符，但保证同一个bbox的文本在一个段中
-        2. 使用GLiNER批处理方式对多个分段进行NER检测
-        3. 将NER结果映射回各个OCR文本块
-        4. 对于跨行的实体，每个部分生成独立的token（类别相同，hash各自计算）
-        5. 先查已注册的实体（Prompt NER），如果匹配到 → 强制匿名化
-        6. 如果没匹配到，使用Image NER的结果（低优先级）
+        OCR text is segmented, passed through GLiNER/regex detection, and
+        each sensitive span is replaced with the fixed placeholder.
         """
         result, _ = self.identify_and_mask_screenshot_with_timing(image_path)
         return result
@@ -364,7 +383,7 @@ class ScreenshotMixin:
         ner_start = time.time()
         all_detections: List[Tuple[int, int, int, str]] = []
         
-        for seg_idx, (segment_text, segment_mapping) in enumerate(zip(segment_texts, segment_mappings)):
+        for segment_text, segment_mapping in zip(segment_texts, segment_mappings):
             detections = self._detect_with_gliner(segment_text)
             
             for det_start, det_end, entity_type in detections:
@@ -387,68 +406,45 @@ class ScreenshotMixin:
         ocr_mask_results = []
         
         for idx, (bbox, original_text, _conf) in enumerate(ocr_data):
-            segment_registered = self._find_registered_entities_in_text(original_text)
             segment_detections = detections_by_ocr.get(idx, [])
-            
             masked_text = original_text
-            new_tokens: Dict[str, str] = {}
             anonymized_chars_count = 0
-            
-            all_replacements: List[Tuple[int, int, str, str, bool]] = []
-            
-            for rel_start, rel_end, real_value, token, entity_type in segment_registered:
-                all_replacements.append((rel_start, rel_end, token, real_value, True))
-            
-            for rel_start, rel_end, entity_type in segment_detections:
-                overlaps_registered = False
-                for reg_rel_start, reg_rel_end, _, _, _ in segment_registered:
-                    if not (rel_end <= reg_rel_start or rel_start >= reg_rel_end):
-                        overlaps_registered = True
-                        break
-                if overlaps_registered:
+            all_replacements: List[Tuple[int, int]] = []
+
+            cursor = -1
+            for rel_start, rel_end, _entity_type in sorted(segment_detections, key=lambda item: item[0]):
+                if rel_end <= rel_start or rel_start < cursor:
                     continue
-                
                 real_value = original_text[rel_start:rel_end]
-                
                 if self._is_in_whitelist(real_value):
                     continue
-                
-                token, is_new = self._get_or_create_token(real_value, entity_type, override_type=False)
-                all_replacements.append((rel_start, rel_end, token, real_value, False))
-                if is_new:
-                    new_tokens[token] = real_value
-            
+                all_replacements.append((rel_start, rel_end))
+                cursor = rel_end
+
             if all_replacements:
-                all_replacements.sort(key=lambda x: x[0])
-                
                 parts = []
                 cursor = 0
-                for rel_start, rel_end, token, real_value, is_registered in all_replacements:
+                replacement = self._format_masked_surface("", wrap_token=True)
+                for rel_start, rel_end in all_replacements:
                     if rel_start < cursor:
                         continue
-                    
-                    anonymized_chars_count += len(real_value)
+                    anonymized_chars_count += rel_end - rel_start
                     parts.append(original_text[cursor:rel_start])
-                    formatted_token = self._format_masked_surface(token, wrap_token=True)
-                    parts.append(formatted_token)
+                    parts.append(replacement)
                     cursor = rel_end
-                
                 parts.append(original_text[cursor:])
                 masked_text = "".join(parts)
-            
-            ocr_mask_results.append((idx, masked_text, new_tokens, anonymized_chars_count))
+
+            ocr_mask_results.append((idx, masked_text, anonymized_chars_count))
         
         regions = []
-        aggregate_new_tokens: Dict[str, str] = {}
         total_original_length = 0
         total_anonymized_chars_count = 0
         
-        for ocr_idx, masked_text, new_tokens, anonymized_chars_count in ocr_mask_results:
+        for ocr_idx, masked_text, anonymized_chars_count in ocr_mask_results:
             bbox, original_text, _conf = ocr_data[ocr_idx]
             total_original_length += len(original_text)
             total_anonymized_chars_count += anonymized_chars_count
-            aggregate_new_tokens.update(new_tokens)
-            
             if masked_text != original_text:
                 xs = [pt[0] for pt in bbox]
                 ys = [pt[1] for pt in bbox]
@@ -469,12 +465,12 @@ class ScreenshotMixin:
                 type="screenshot",
                 original_length=total_original_length,
                 anonymized_chars_count=total_anonymized_chars_count,
-                num_tokens=len(aggregate_new_tokens)
+                num_tokens=0
             )
 
         if not regions:
             timing['total_time'] = time.time() - total_start
-            return (image_path, aggregate_new_tokens), timing
+            return (image_path, {}), timing
 
         masked_image_path = image_path.replace(".png", "_masked.png")
         
@@ -495,7 +491,7 @@ class ScreenshotMixin:
                 
                 img.save(masked_image_path)
                 timing['total_time'] = time.time() - total_start
-                return (masked_image_path, aggregate_new_tokens), timing
+                return (masked_image_path, {}), timing
             except Exception as exc:  # pragma: no cover - runtime safety
                 print(f"[PrivacyProtection] Failed to mask image with PIL: {exc}")
                 if Image is not None and Drawing is not None and Color is not None:
@@ -526,14 +522,14 @@ class ScreenshotMixin:
 
                             img.save(filename=masked_image_path)
                             timing['total_time'] = time.time() - total_start
-                            return (masked_image_path, aggregate_new_tokens), timing
+                            return (masked_image_path, {}), timing
                     except Exception as exc2:  # pragma: no cover - runtime safety
                         print(f"[PrivacyProtection] Failed to mask image with Wand: {exc2}")
                         timing['total_time'] = time.time() - total_start
-                        return (image_path, aggregate_new_tokens), timing
+                        return (image_path, {}), timing
                 else:
                     timing['total_time'] = time.time() - total_start
-                    return (image_path, aggregate_new_tokens), timing
+                    return (image_path, {}), timing
         elif Image is not None and Drawing is not None and Color is not None:
             try:
                 with Image(filename=image_path) as img:
@@ -562,12 +558,12 @@ class ScreenshotMixin:
 
                     img.save(filename=masked_image_path)
                     timing['total_time'] = time.time() - total_start
-                    return (masked_image_path, aggregate_new_tokens), timing
+                    return (masked_image_path, {}), timing
             except Exception as exc:  # pragma: no cover - runtime safety
                 print(f"[PrivacyProtection] Failed to mask image: {exc}")
                 timing['total_time'] = time.time() - total_start
-                return (image_path, aggregate_new_tokens), timing
+                return (image_path, {}), timing
         else:
             print("[PrivacyProtection] Neither PIL nor Wand is available for image masking.")
             timing['total_time'] = time.time() - total_start
-            return (image_path, aggregate_new_tokens), timing
+            return (image_path, {}), timing
