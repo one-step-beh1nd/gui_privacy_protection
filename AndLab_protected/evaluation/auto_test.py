@@ -376,6 +376,12 @@ class AutoTest():
             last_status = self._run_task_once(task_dict, instance, attempt_index)
             if last_status != "unexpected":
                 return last_status
+            if attempt_index < self.max_task_attempts:
+                print_with_color(
+                    f"[TaskRetry] Task {task_id} failed unexpectedly; waiting 60s before retry...",
+                    "yellow",
+                )
+                time.sleep(60)
         print_with_color(
             f"[TaskRetry] Task {task_id} still failed unexpectedly after {self.max_task_attempts} attempts.",
             "red",
