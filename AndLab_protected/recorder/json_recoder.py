@@ -6,7 +6,6 @@ import jsonlines
 from utils_mobile.utils import draw_bbox_multi
 from utils_mobile.xml_tool import UIXMLTree
 from utils_mobile.privacy.dualtap_adapter import is_dualtap_backend, perturb_screenshot_with_dualtap
-from utils_mobile.privacy_protection import get_privacy_layer
 
 
 
@@ -60,9 +59,6 @@ class JSONRecorder:
         self.history = []
         self.command_per_step = []
         
-        # Set task directory for privacy protection layer statistics
-        privacy_layer = get_privacy_layer()
-        privacy_layer.set_task_dir(log_dir)
         if config.version is None or config.version == "v1":
             self.xml_compressed_version = "v1"
         elif config.version == "v2":
@@ -119,8 +115,6 @@ class JSONRecorder:
         return step
 
     def update_before(self, controller, prompt="** XML **", need_screenshot=False, ac_status=False, need_labeled=False):
-        privacy_layer = get_privacy_layer()
-        
         if need_screenshot:
             self.page_executor.update_screenshot(prefix=str(self.turn_number), suffix="before")
             if self.page_executor.current_screenshot and is_dualtap_backend(self.config):
@@ -131,17 +125,6 @@ class JSONRecorder:
                     )
                 except Exception as e:
                     print(f"Warning: Failed to apply DualTAP perturbation to screenshot: {e}")
-            # Apply privacy protection to screenshot
-            elif privacy_layer.enabled and self.page_executor.current_screenshot:
-                try:
-                    masked_image_path, new_tokens = privacy_layer.identify_and_mask_screenshot(
-                        self.page_executor.current_screenshot
-                    )
-                    # Update screenshot path to masked version
-                    if masked_image_path != self.page_executor.current_screenshot:
-                        self.page_executor.current_screenshot = masked_image_path
-                except Exception as e:
-                    print(f"Warning: Failed to apply privacy protection to screenshot: {e}")
         
         xml_path = None
         ac_xml_path = None
@@ -159,8 +142,6 @@ class JSONRecorder:
                     ac_xml_path = "ERROR"
             else:
                 xml_path = os.path.join(self.xml_file_path, str(self.turn_number) + '.xml')
-                # Note: Privacy protection is applied to compressed XML in get_latest_xml(),
-                # not to the original XML file which is kept for record-keeping purposes.
         else:
             xml_status = controller.get_ac_xml(prefix=str(self.turn_number), save_dir=self.xml_file_path)
             if "ERROR" in xml_status:
@@ -174,8 +155,6 @@ class JSONRecorder:
             else:
                 # get_ac_xml returns the full path, use it directly
                 ac_xml_path = xml_status
-                # Note: Privacy protection is applied to compressed XML in get_latest_xml(),
-                # not to the original XML file which is kept for record-keeping purposes.
 
         step = {
             "trace_id": self.id,
@@ -258,29 +237,8 @@ class JSONRecorder:
             return "[XML fetch failed: Unable to retrieve UI hierarchy. Element-based operations (tap, long_press, swipe) are not available. Please use coordinate-based operations or wait and retry.]"
         
         xml_compressed = get_compressed_xml(xml_path, version=self.xml_compressed_version)
-        
-        # Apply privacy protection: mask sensitive information in compressed XML only
-        # IMPORTANT: This uses the same PrivacyProtectionLayer instance that was used for
-        # anonymizing the instruction, so entities that appeared in the instruction will
-        # be mapped to the same tokens (via _get_or_create_token which checks real_to_token first).
-        privacy_layer = get_privacy_layer()
-        if is_dualtap_backend(self.config):
-            pass
-        elif privacy_layer.enabled and xml_compressed:
-            try:
-                # Only mask the compressed XML (not the original XML)
-                # identify_and_mask_xml is designed for compressed XML format
-                # It will reuse tokens from instruction anonymization if the same entities are found
-                masked_xml_compressed, new_tokens = privacy_layer.identify_and_mask_xml(xml_compressed)
-                xml_compressed = masked_xml_compressed
-                if new_tokens:
-                    print(f"[PrivacyProtection] XML anonymization: {len(new_tokens)} new tokens created")
-            except Exception as e:
-                print(f"Warning: Failed to apply privacy protection to compressed XML: {e}")
-        elif not privacy_layer.enabled:
-            print("[PrivacyProtection] Privacy protection is disabled, XML will not be anonymized")
-        elif not xml_compressed:
-            print("[PrivacyProtection] Warning: compressed XML is empty, skipping anonymization")
+        if not xml_compressed:
+            xml_compressed = ""
         
         with open(os.path.join(self.xml_file_path, f"{self.turn_number}_compressed_xml.txt"), 'w',
                   encoding='utf-8') as f:

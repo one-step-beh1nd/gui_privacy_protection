@@ -107,7 +107,7 @@ class TaskConfig:
     sample: Optional[bool] = False
     show_avd: Optional[bool] = False
     version: Optional[str] = None
-    privacy_backend: Optional[str] = "legacy"
+    privacy_backend: Optional[str] = "dualtap"
     dualtap_checkpoint: Optional[str] = None
     dualtap_image_size: Optional[int] = None
 

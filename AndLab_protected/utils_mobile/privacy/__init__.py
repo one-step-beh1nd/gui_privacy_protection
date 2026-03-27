@@ -1,11 +1,8 @@
 """
-Privacy Protection Layer package for Android-Lab.
-
-Re-exports the public API so that consumers can do:
-    from utils_mobile.privacy import PrivacyProtectionLayer, get_privacy_layer, ...
+Privacy package for Android-Lab (SoM + DualTAP for images; no GLiNER/OCR masking).
 """
 
-from .constants import GLINER_PII_LABELS, GLINER_DETECTION_THRESHOLD
+from .constants import _HASH_ALPHABET
 from .layer import (
     PrivacyProtectionLayer,
     get_privacy_layer,
@@ -18,6 +15,5 @@ __all__ = [
     "get_privacy_layer",
     "set_privacy_layer",
     "cloud_agent_compute_with_tokens",
-    "GLINER_PII_LABELS",
-    "GLINER_DETECTION_THRESHOLD",
+    "_HASH_ALPHABET",
 ]

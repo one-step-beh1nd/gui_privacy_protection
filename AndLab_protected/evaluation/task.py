@@ -340,7 +340,7 @@ class Evaluation_Task(Generic[T_INPUT, T_OUTPUT, T_TARGET]):
 
         self.save_single(task, final_result)
         
-        # Clear token mapping after evaluation to avoid mixing mappings from different tasks
+        # Clear this thread's in-memory mapping after evaluation (get_privacy_layer is per-thread).
         if local_token_to_real:
             privacy_layer = get_privacy_layer()
             privacy_layer.token_to_real.clear()

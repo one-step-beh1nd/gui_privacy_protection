@@ -1,5 +1,8 @@
+import concurrent.futures
+import copy
+import time
 from queue import Queue
-import concurrent
+
 from evaluation.auto_test import *
 
 
@@ -8,6 +11,8 @@ def task_done_callback(future, docker_instance, free_dockers):
 
 
 def parallel_worker(class_, config, parallel, tasks):
+    """Run ``run_task`` concurrently with ``parallel`` emulator instances (thread pool)."""
+    work = list(tasks)
     free_dockers = Queue()
     for idx in range(parallel):
         if config.docker:
@@ -17,13 +22,13 @@ def parallel_worker(class_, config, parallel, tasks):
         free_dockers.put(instance)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as executor:
-        while tasks:
+        while work:
             if free_dockers.empty():
                 time.sleep(0.5)
                 continue
 
             instance = free_dockers.get()
-            task = tasks.pop(0)
+            task = work.pop(0)
 
             config_copy = copy.deepcopy(config)
             auto_class = class_(config_copy)

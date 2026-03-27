@@ -340,37 +340,7 @@ Pauses the execution for the given number of seconds. Default is 5 second.
 Ends the task and provides the final output. You can return the final output of the task as a string.
 Example: finish("Task completed")
 
-Whenever you pass literal values (text, IDs, etc.) into any of the functions above, remember that the values you observe in the UI might either be the real values or anonymized tokens such as "phone_number#0abc1". These tokens are placeholders that protect the true data. If you need to operate on the underlying real value, supply the anonymized token itself as the function argument and the local runtime will automatically translate it back to the real value for you—never try to guess or reconstruct the plaintext on your own.
-
-9. cloud_agent_compute_with_tokens(anon_tokens: List[str], compute_instruction: str, usage_reason: str)
-
-Requests a privacy-preserving semantic computation on sensitive values referenced by anonymized tokens.
-
-This function sends the anonymized tokens and the intended computation to a local privacy controller, which will:
-(1) map the anonymized tokens back to their real values locally,
-(2) check whether the requested computation is consistent with the current task and justified by the usage reason,
-(3) execute the computation if approved, and
-(4) return the result in a structured form.
-
-Example:
-cloud_agent_compute_with_tokens(
-    ["phone_number#0abc1"],
-    "check whether this phone number is already in the contact list",
-    "need to avoid adding a duplicate contact"
-)
-
-Arguments:
-- anon_tokens (List[str]): The anonymized tokens observed in the UI that refer to sensitive real values.
-- compute_instruction (str): A brief description of the semantic computation to be performed.
-- usage_reason (str): A brief explanation of why this computation is necessary to accomplish the current task.
-
-Returns:
-A dictionary with the following fields:
-- approved (bool): Whether the computation request is approved.
-- decision_reason (str): The reason for approval or rejection.
-- result (any): The computation result if approved, otherwise None.
-- missing_tokens (List[str]): Tokens that were required but not provided.
-- raw_llm_output (str): The raw output produced by the internal model during the computation.
+Privacy (SoM + DualTAP): The labeled screenshot may be privacy-protected on-device using imperceptible visual perturbation. Base your decisions on the numeric element tags and the XML hierarchy supplied alongside the image; they reflect the real layout and on-device text. Pass literal strings the task requires into text() as usual—there are no anonymized placeholder tokens in the UI stream.
 
 Now, given the following labeled screenshot, you need to think and call the function needed to proceed with the task. 
 Your output should include only action part in the given format:
@@ -506,6 +476,8 @@ Pauses the execution for the given number of seconds. Default is 5 second.
 Ends the task and provides the final output. You can return the final output of the task as a string.
 Example: finish("Task completed")
 
+Privacy (SoM + DualTAP): The labeled screenshot may be privacy-protected on-device using imperceptible visual perturbation. Base your decisions on the numeric element tags and the XML hierarchy supplied alongside the image; they reflect the real layout and on-device text. Pass literal strings the task requires into text() as usual—there are no anonymized placeholder tokens in the UI stream.
+
 The task you need to complete is to <task_description>. Your past actions to proceed with this task are summarized as 
 follows: <last_act>
 Now, given the following labeled screenshot, you need to think and call the function needed to proceed with the task. 
@@ -571,6 +543,8 @@ Pauses the execution for the given number of seconds. Default is 5 second.
 
 Ends the task and provides the final output. You can return the final output of the task as a string.
 Example: finish("Task completed")
+
+Privacy (SoM + DualTAP): The labeled screenshot may be privacy-protected on-device using imperceptible visual perturbation. Base your decisions on the numeric element tags and the XML hierarchy supplied alongside the image; they reflect the real layout and on-device text. Pass literal strings the task requires into text() as usual—there are no anonymized placeholder tokens in the UI stream.
 
 Now, given the following labeled screenshot, you need to think and call the function needed to proceed with the task. 
 Your output should include Obs, Thought and Act in the given format:

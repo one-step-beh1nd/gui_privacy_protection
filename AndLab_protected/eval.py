@@ -4,12 +4,13 @@ import argparse
 import yaml
 import json
 import glob
+import sys
 
 from agent import get_agent
 from evaluation.auto_test import *
+from evaluation.parallel import parallel_worker
 from generate_result import find_all_task_files
 from evaluation.configs import AppConfig, TaskConfig
-from utils_mobile.privacy.dualtap_adapter import DUALTAP_BACKEND
 from utils_mobile.privacy_protection import PrivacyProtectionLayer, set_privacy_layer
 
 
@@ -148,6 +149,13 @@ if __name__ == '__main__':
     arg_parser.add_argument("--task_id", nargs="+", default=None)
     arg_parser.add_argument("--debug", action="store_true", default=False)
     arg_parser.add_argument("--app", nargs="+", default=None)
+    arg_parser.add_argument(
+        "-p",
+        "--parallel",
+        type=int,
+        default=1,
+        help="并发跑任务数（>1 时使用多 AVD/多 Docker 实例；每线程独立隐私层）",
+    )
 
     args = arg_parser.parse_args()
     with open(args.config, "r") as file:
@@ -158,7 +166,7 @@ if __name__ == '__main__':
     eval_config = yaml_data["eval"]
 
     task_args = task_config.get("args", {})
-    privacy_backend = task_args.get("privacy_backend") or os.environ.get("PRIVACY_BACKEND") or "legacy"
+    privacy_backend = task_args.get("privacy_backend") or os.environ.get("PRIVACY_BACKEND") or "dualtap"
     os.environ["PRIVACY_BACKEND"] = privacy_backend
 
     dualtap_checkpoint = task_args.get("dualtap_checkpoint") or os.environ.get("DUALTAP_CHECKPOINT")
@@ -169,7 +177,7 @@ if __name__ == '__main__':
     if dualtap_image_size:
         os.environ["DUALTAP_IMAGE_SIZE"] = str(dualtap_image_size)
 
-    set_privacy_layer(PrivacyProtectionLayer(enabled=privacy_backend != DUALTAP_BACKEND))
+    set_privacy_layer(PrivacyProtectionLayer(enabled=False))
 
     autotask_class = task_config["class"] if "class" in task_config else "ScreenshotMobileTask_AutoTest"
 
@@ -229,8 +237,21 @@ if __name__ == '__main__':
     if class_ is None:
         raise AttributeError(f"Class {autotask_class} not found. Please check the class name in the config file.")
 
-    Auto_Test = class_(single_config.subdir_config(args.name))
-    Auto_Test.run_serial(all_task_start_info)
+    if autotask_class not in SOM_SUPPORTED_AUTO_TASK_CLASSES:
+        print(
+            "错误：本仓库当前仅支持 SoM（截图/视觉）模式。请在 YAML 的 task.class 中使用 "
+            "ScreenshotMobileTask_AutoTest（或与之一致的视觉类），"
+            "不要使用 TextOnlyMobileTask_AutoTest 等纯 XML 模式。",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    run_config = single_config.subdir_config(args.name)
+    if args.parallel > 1:
+        parallel_worker(class_, run_config, args.parallel, all_task_start_info)
+    else:
+        Auto_Test = class_(run_config)
+        Auto_Test.run_serial(all_task_start_info)
     
     # Calculate and save overall anonymization statistics
     task_dir = os.path.abspath(single_config.subdir_config(args.name).save_dir)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -9,12 +10,15 @@ from PIL import Image
 
 
 DUALTAP_BACKEND = "dualtap"
-_DEFAULT_BACKEND = "legacy"
+_DEFAULT_BACKEND = DUALTAP_BACKEND
 _BACKEND_ENV_KEY = "PRIVACY_BACKEND"
 _CHECKPOINT_ENV_KEY = "DUALTAP_CHECKPOINT"
 _IMAGE_SIZE_ENV_KEY = "DUALTAP_IMAGE_SIZE"
+_DEVICE_ENV_KEY = "DUALTAP_DEVICE"
+_SHARE_MODEL_ENV_KEY = "DUALTAP_SHARE_MODEL"
 
-_LOADED_RUNTIME: Dict[Tuple[str, Optional[int]], Tuple[Any, Any, Any]] = {}
+_LOADED_RUNTIME_GLOBAL: Dict[Tuple[str, Optional[int]], Tuple[Any, Any, Any]] = {}
+_tls = threading.local()
 
 
 def _config_value(config: Any, key: str) -> Any:
@@ -32,11 +36,34 @@ def is_dualtap_backend(config: Any = None) -> bool:
     return resolve_privacy_backend(config) == DUALTAP_BACKEND
 
 
+def _auto_discover_dualtap_checkpoint() -> Optional[str]:
+    project_root = Path(__file__).resolve().parents[2]
+    dualtap_root = _dualtap_root()
+    candidate_dirs = (
+        project_root,
+        project_root / "checkpoints_eot",
+        project_root / "checkpoint_eot",
+        dualtap_root / "checkpoints_eot",
+        dualtap_root / "checkpoint_eot",
+    )
+    checkpoints = []
+    for directory in candidate_dirs:
+        if not directory.exists():
+            continue
+        checkpoints.extend(sorted(directory.glob("*.pth"), key=lambda p: p.stat().st_mtime, reverse=True))
+    if checkpoints:
+        return str(checkpoints[0].resolve())
+    return None
+
+
 def resolve_dualtap_checkpoint(config: Any = None) -> Optional[str]:
     checkpoint = _config_value(config, "dualtap_checkpoint") or os.environ.get(_CHECKPOINT_ENV_KEY)
     if checkpoint:
         return os.path.abspath(str(checkpoint))
-    return None
+    discovered = _auto_discover_dualtap_checkpoint()
+    if discovered:
+        os.environ.setdefault(_CHECKPOINT_ENV_KEY, discovered)
+    return discovered
 
 
 def resolve_dualtap_image_size(config: Any = None) -> Optional[int]:
@@ -64,30 +91,73 @@ def _ensure_dualtap_importable() -> Path:
     return dualtap_root
 
 
-def _load_dualtap_runtime(checkpoint_path: str, override_image_size: Optional[int] = None) -> Tuple[Any, Any, Any]:
-    cache_key = (checkpoint_path, override_image_size)
-    if cache_key in _LOADED_RUNTIME:
-        return _LOADED_RUNTIME[cache_key]
+def _env_flag_true(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
+
+def _apply_device_to_dualtap_config(config: Any) -> None:
+    import torch
+
+    raw = os.environ.get(_DEVICE_ENV_KEY, "").strip()
+    if not raw:
+        if torch.cuda.is_available():
+            os.environ[_DEVICE_ENV_KEY] = "cuda:0"
+            config.device = "cuda:0"
+        else:
+            config.device = "cpu"
+    else:
+        config.device = raw
+
+
+def _load_dualtap_runtime_once(checkpoint_path: str, override_image_size: Optional[int] = None) -> Tuple[Any, Any, Any]:
     _ensure_dualtap_importable()
     from config import Config  # type: ignore
-    from inference import generate_adversarial_image, load_generator  # type: ignore
+    from inference import load_generator  # type: ignore
 
     config = Config()
     if override_image_size is not None:
         config.image_size = override_image_size
-
+    _apply_device_to_dualtap_config(config)
     generator, device = load_generator(checkpoint_path, config)
-    _LOADED_RUNTIME[cache_key] = (config, generator, device)
-    return _LOADED_RUNTIME[cache_key]
+    return (config, generator, device)
+
+
+def _thread_local_runtimes() -> Dict[Tuple[str, Optional[int]], Tuple[Any, Any, Any]]:
+    d = getattr(_tls, "dualtap_runtimes", None)
+    if d is None:
+        d = {}
+        _tls.dualtap_runtimes = d
+    return d
+
+
+def _load_dualtap_runtime(checkpoint_path: str, override_image_size: Optional[int] = None) -> Tuple[Any, Any, Any]:
+    cache_key = (checkpoint_path, override_image_size)
+
+    if _env_flag_true(_SHARE_MODEL_ENV_KEY):
+        if cache_key not in _LOADED_RUNTIME_GLOBAL:
+            _LOADED_RUNTIME_GLOBAL[cache_key] = _load_dualtap_runtime_once(checkpoint_path, override_image_size)
+        return _LOADED_RUNTIME_GLOBAL[cache_key]
+
+    per_thread = _thread_local_runtimes()
+    if cache_key not in per_thread:
+        per_thread[cache_key] = _load_dualtap_runtime_once(checkpoint_path, override_image_size)
+    return per_thread[cache_key]
+
+
+def _default_dualtap_output_path(image_path: str) -> str:
+    root, ext = os.path.splitext(image_path)
+    if not ext:
+        ext = ".png"
+    return f"{root}_dualtap{ext}"
 
 
 def perturb_screenshot_with_dualtap(image_path: str, config: Any = None, output_path: Optional[str] = None) -> str:
     checkpoint_path = resolve_dualtap_checkpoint(config)
     if not checkpoint_path:
         raise ValueError(
-            "DualTAP backend is enabled but no checkpoint was provided. "
-            "Set task.dualtap_checkpoint in YAML or DUALTAP_CHECKPOINT in the environment."
+            "DualTAP is enabled by default but no checkpoint was found. "
+            "Place a .pth file under DualTAP/checkpoints_eot (or checkpoint_eot), "
+            "or set task.dualtap_checkpoint / DUALTAP_CHECKPOINT explicitly."
         )
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"DualTAP checkpoint not found: {checkpoint_path}")
@@ -111,7 +181,7 @@ def perturb_screenshot_with_dualtap(image_path: str, config: Any = None, output_
     if adversarial_image.size != original_size:
         adversarial_image = adversarial_image.resize(original_size, Image.LANCZOS)
 
-    target_path = output_path or image_path
+    target_path = output_path or _default_dualtap_output_path(image_path)
     temp_path = f"{target_path}.dualtap_tmp.png"
     adversarial_image.save(temp_path)
     os.replace(temp_path, target_path)

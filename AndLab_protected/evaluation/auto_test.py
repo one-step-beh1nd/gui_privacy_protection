@@ -10,8 +10,17 @@ from page_executor.simple_vision_executor import VisionExecutor
 from recorder import JSONRecorder
 from templates import *
 from templates.packages import find_package
-from utils_mobile.privacy.dualtap_adapter import is_dualtap_backend
-from utils_mobile.privacy_protection import get_privacy_layer
+
+# eval.py 仅允许使用的 SoM（截图/视觉）AutoTest 类名，与 YAML task.class 一致
+SOM_SUPPORTED_AUTO_TASK_CLASSES = frozenset({
+    "ScreenshotMobileTask_AutoTest",
+    "ScreenshotMobileTask_AutoTest_for_show",
+    "CogAgentTask_AutoTest",
+    "ScreenReactTask_AutoTest",
+})
+
+_TASK_RETRY_MAX_ATTEMPTS = 3
+_TASK_RETRY_DELAY_SEC = 60
 
 
 class Instance():
@@ -241,88 +250,123 @@ class AutoTest():
             self.run_task(task, instance)
 
     def run_task(self, task_dict, instance):
-        task_id = task_dict['task_id']
-        demo_timestamp = int(time.time())
-        self.config.task_name = task_id + "_" + datetime.datetime.fromtimestamp(demo_timestamp).strftime(
-            "%Y-%m-%d_%H-%M-%S")
-        # print(f"{task_id} running in {instance.container_id}")
-
-        # 保存原始任务指令与匿名后的指令
-        self.original_instruction = task_dict['task_instruction']
+        task_id = task_dict["task_id"]
+        self.original_instruction = task_dict["task_instruction"]
         self.instruction = self.original_instruction
-        privacy_layer = get_privacy_layer()
-        if is_dualtap_backend(self.config):
-            self.instruction = self.original_instruction
-        elif privacy_layer.enabled:
-            try:
-                anonymized_instruction, _ = privacy_layer.anonymize_prompt(self.original_instruction)
-                self.instruction = anonymized_instruction
-            except Exception as exc:
-                print_with_color(f"[PrivacyProtection] prompt anonymization failed: {exc}", "red")
+        self.app = task_dict["app"]
+        llm_agent = task_dict["agent"]
 
-        self.app = task_dict['app']
-        if not self.config.sample:
-            self.command_per_step = task_dict['command_per_step']
-        else:
-            self.command_per_step = None
-        self.prepare_for_task()
-        self.start_emulator(instance)
-        self.llm_agent = task_dict["agent"]
+        for attempt in range(1, _TASK_RETRY_MAX_ATTEMPTS + 1):
+            if attempt > 1:
+                print_with_color(
+                    f"[Retry] 任务 {task_id}：第 {attempt}/{_TASK_RETRY_MAX_ATTEMPTS} 次尝试，"
+                    f"等待 {_TASK_RETRY_DELAY_SEC}s 后从头重试...",
+                    "yellow",
+                )
+                time.sleep(_TASK_RETRY_DELAY_SEC)
 
-        print_with_color(self.instruction, "green")
-        round_count = 0
+            demo_timestamp = int(time.time())
+            self.config.task_name = task_id + "_" + datetime.datetime.fromtimestamp(demo_timestamp).strftime(
+                "%Y-%m-%d_%H-%M-%S"
+            )
+
+            if not self.config.sample:
+                self.command_per_step = task_dict["command_per_step"]
+            else:
+                self.command_per_step = None
+
+            task_complete, error_exc, round_count = self._run_single_task_attempt(instance, llm_agent)
+
+            if task_complete:
+                return
+            if error_exc is None:
+                return
+
+            if attempt == _TASK_RETRY_MAX_ATTEMPTS:
+                print_with_color(
+                    f"[Retry] 任务 {task_id} 因异常已连续失败 {_TASK_RETRY_MAX_ATTEMPTS} 次，放弃重试。"
+                    f" 最后一次错误: {error_exc}",
+                    "red",
+                )
+                return
+
+    def _run_single_task_attempt(self, instance, llm_agent):
+        """
+        执行单次任务（新 task 目录、起模拟器、跑回合）。在 finally 中停止模拟器。
+        返回 (task_complete, error_exc, round_count)：
+        - error_exc 非 None 表示发生异常，外层可重试；
+        - error_exc 为 None 且 task_complete 为 False 表示如用尽 max_rounds，不重试。
+        """
         task_complete = False
+        round_count = 0
+        error_exc = None
+        try:
+            self.prepare_for_task()
+            self.start_emulator(instance)
+            self.llm_agent = llm_agent
 
-        self.page_executor = self.get_executor()
-        # 将原始指令和匿名后的指令挂到执行器，供本地隐私接口使用
-        self.page_executor.original_instruction = getattr(self, "original_instruction", self.instruction)
-        self.page_executor.anonymized_instruction = self.instruction
+            print_with_color(self.instruction, "green")
 
-        # 记录层同时保存原始与匿名后的指令，便于后续查阅
-        self.record = JSONRecorder(
-            id=self.config.task_name,
-            instruction=self.original_instruction,
-            anonymized_instruction=self.instruction,
-            page_executor=self.page_executor,
-            config=self.config,
-        )
-        task_agent = self.get_agent()
-        while round_count < self.config.max_rounds:
-            try:
-                round_count += 1
-                print_with_color(f"Round {round_count}", "yellow")
-                task_agent.run_step(round_count)
-                print_with_color("Thinking about what to do in the next step...", "yellow")
-                time.sleep(self.config.request_interval)
+            self.page_executor = self.get_executor()
+            self.page_executor.original_instruction = getattr(self, "original_instruction", self.instruction)
+            self.page_executor.anonymized_instruction = self.instruction
 
-                if task_agent.page_executor.is_finish:
-                    print_with_color(f"Completed successfully.", "yellow")
-                    task_agent.page_executor.update_screenshot(prefix="end")
-                    task_complete = True
+            self.record = JSONRecorder(
+                id=self.config.task_name,
+                instruction=self.original_instruction,
+                anonymized_instruction=self.instruction,
+                page_executor=self.page_executor,
+                config=self.config,
+            )
+            task_agent = self.get_agent()
+            while round_count < self.config.max_rounds:
+                try:
+                    round_count += 1
+                    print_with_color(f"Round {round_count}", "yellow")
+                    task_agent.run_step(round_count)
+                    print_with_color("Thinking about what to do in the next step...", "yellow")
+                    time.sleep(self.config.request_interval)
+
+                    if task_agent.page_executor.is_finish:
+                        print_with_color("Completed successfully.", "yellow")
+                        task_agent.page_executor.update_screenshot(prefix="end")
+                        task_complete = True
+                        break
+                except Exception as e:
+                    import traceback
+
+                    traceback.print_exc()
+                    print_with_color(f"Error: {e}", "red")
+                    error_exc = e
                     break
-            except Exception as e:
-                import traceback
-                print(traceback.print_exc())
-                print_with_color(f"Error: {e}", "red")
-                break
+        except Exception as e:
+            import traceback
 
-        # Save privacy protection statistics before stopping the task
-        privacy_layer = get_privacy_layer()
-        if privacy_layer.enabled:
+            traceback.print_exc()
+            print_with_color(f"Error: {e}", "red")
+            error_exc = e
+        finally:
             try:
-                privacy_layer.save_stats()
-            except Exception as e:
-                print_with_color(f"[PrivacyProtection] Failed to save statistics: {e}", "red")
-        
-        instance.stop_single_task()
+                instance.stop_single_task()
+            except Exception:
+                pass
+
         if task_complete:
             print_with_color(f"Completed successfully. {round_count} rounds generated.", "green")
-        elif round_count == self.config.max_rounds:
+        elif error_exc is not None:
+            print_with_color(
+                f"Finished with error after {round_count} round(s): {error_exc}",
+                "red",
+            )
+        elif round_count >= self.config.max_rounds and not task_complete:
             print_with_color(
                 f"Finished due to reaching max rounds. {round_count} rounds generated.",
-                "yellow")
-        else:
+                "yellow",
+            )
+        elif not task_complete:
             print_with_color(f"Finished unexpectedly. {round_count} rounds generated.", "red")
+
+        return task_complete, error_exc, round_count
 
     def get_agent(self):
         return NotImplementedError

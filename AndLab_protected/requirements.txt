@@ -36,9 +36,7 @@ fuzzywuzzy
 openpyxl
 transformers
 spacy
-easyocr
 torch
 mmh3
 xxhash
 cityhash
-wand
