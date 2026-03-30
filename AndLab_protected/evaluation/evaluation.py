@@ -1,9 +1,11 @@
 import templates.seeact_screenshot_prompts as SeeActPrompts
 import templates.seeact_xml_prompts as SeeActPrompts_xml
+import time
 from evaluation.definition import *
 from evaluation.utils import *
 from templates import *
 import json
+from utils_mobile.timing_debug import log_timing, timing_enabled
 
 
 
@@ -68,8 +70,18 @@ class TextOnlyTask(AutoTask):
 
 class ScreenshotTask(TextOnlyTask):
     def run_step(self, round_count):
+        step_started = time.perf_counter()
+        before_started = time.perf_counter()
         self.record.update_before(controller=self.controller, need_screenshot=True, ac_status=self.accessibility,
                                   need_labeled=True)
+        if timing_enabled():
+            log_timing(
+                "Eval",
+                "update_before_done",
+                trace_id=self.record.id,
+                round=self.record.turn_number,
+                elapsed_ms=round((time.perf_counter() - before_started) * 1000, 2),
+            )
         prompt = f"" if round_count == 0 else "** XML **\n"
         try:
             xml = self.record.get_latest_xml()
@@ -78,7 +90,17 @@ class ScreenshotTask(TextOnlyTask):
             messages_to_send = [*self.record.history, current_message]
             # Save prompt before sending to cloud agent
             self.record.save_prompt_to_cloud_agent(messages_to_send, turn_number=self.record.turn_number)
+            act_started = time.perf_counter()
             rsp = self.agent.act(messages_to_send)
+            if timing_enabled():
+                log_timing(
+                    "Eval",
+                    "agent_act_done",
+                    trace_id=self.record.id,
+                    round=self.record.turn_number,
+                    elapsed_ms=round((time.perf_counter() - act_started) * 1000, 2),
+                    message_count=len(messages_to_send),
+                )
             
             #rsp = input("Please input the response: ")
         except Exception as e:
@@ -86,8 +108,34 @@ class ScreenshotTask(TextOnlyTask):
             print(traceback.print_exc())
             # print_with_color(f"Error: {e}", "red")
 
+        executor_started = time.perf_counter()
         exe_res = self.page_executor(get_code_snippet(rsp))
+        if timing_enabled():
+            log_timing(
+                "Eval",
+                "executor_done",
+                trace_id=self.record.id,
+                round=self.record.turn_number,
+                elapsed_ms=round((time.perf_counter() - executor_started) * 1000, 2),
+                action=exe_res.get("action"),
+            )
+        after_started = time.perf_counter()
         self.record.update_after(exe_res, rsp)
+        if timing_enabled():
+            log_timing(
+                "Eval",
+                "update_after_done",
+                trace_id=self.record.id,
+                round=self.record.turn_number,
+                elapsed_ms=round((time.perf_counter() - after_started) * 1000, 2),
+            )
+            log_timing(
+                "Eval",
+                "run_step_done",
+                trace_id=self.record.id,
+                round=self.record.turn_number,
+                elapsed_ms=round((time.perf_counter() - step_started) * 1000, 2),
+            )
         self.record.turn_number += 1
 
     def set_system_prompt(self, instruction):

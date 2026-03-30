@@ -10,6 +10,7 @@ from page_executor.simple_vision_executor import VisionExecutor
 from recorder import JSONRecorder
 from templates import *
 from templates.packages import find_package
+from utils_mobile.timing_debug import log_timing, timing_enabled
 
 # eval.py 仅允许使用的 SoM（截图/视觉）AutoTest 类名，与 YAML task.class 一致
 SOM_SUPPORTED_AUTO_TASK_CLASSES = frozenset({
@@ -304,6 +305,16 @@ class AutoTest():
             self.prepare_for_task()
             self.start_emulator(instance)
             self.llm_agent = llm_agent
+            if timing_enabled():
+                log_timing(
+                    "AutoTest",
+                    "task_attempt_started",
+                    task_id=self.config.task_name,
+                    app=self.app,
+                    instance=instance.idx,
+                    agent_id=id(llm_agent),
+                    agent_type=type(llm_agent).__name__,
+                )
 
             print_with_color(self.instruction, "green")
 
@@ -323,9 +334,30 @@ class AutoTest():
                 try:
                     round_count += 1
                     print_with_color(f"Round {round_count}", "yellow")
+                    round_started = time.perf_counter()
                     task_agent.run_step(round_count)
+                    if timing_enabled():
+                        log_timing(
+                            "AutoTest",
+                            "run_step_done",
+                            task_id=self.config.task_name,
+                            round=round_count,
+                            elapsed_ms=round((time.perf_counter() - round_started) * 1000, 2),
+                            instance=instance.idx,
+                        )
                     print_with_color("Thinking about what to do in the next step...", "yellow")
+                    sleep_started = time.perf_counter()
                     time.sleep(self.config.request_interval)
+                    if timing_enabled():
+                        log_timing(
+                            "AutoTest",
+                            "request_interval_done",
+                            task_id=self.config.task_name,
+                            round=round_count,
+                            elapsed_ms=round((time.perf_counter() - sleep_started) * 1000, 2),
+                            configured_interval=self.config.request_interval,
+                            instance=instance.idx,
+                        )
 
                     if task_agent.page_executor.is_finish:
                         print_with_color("Completed successfully.", "yellow")

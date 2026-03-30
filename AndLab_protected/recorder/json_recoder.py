@@ -1,8 +1,10 @@
 import json
 import os
+import time
 
 import jsonlines
 
+from utils_mobile.timing_debug import log_timing, timing_enabled
 from utils_mobile.utils import draw_bbox_multi
 from utils_mobile.xml_tool import UIXMLTree
 from utils_mobile.privacy.dualtap_adapter import is_dualtap_backend, perturb_screenshot_with_dualtap
@@ -115,14 +117,33 @@ class JSONRecorder:
         return step
 
     def update_before(self, controller, prompt="** XML **", need_screenshot=False, ac_status=False, need_labeled=False):
+        started_at = time.perf_counter()
         if need_screenshot:
+            screenshot_started = time.perf_counter()
             self.page_executor.update_screenshot(prefix=str(self.turn_number), suffix="before")
+            if timing_enabled():
+                log_timing(
+                    "Recorder",
+                    "screenshot_updated",
+                    trace_id=self.id,
+                    round=self.turn_number,
+                    elapsed_ms=round((time.perf_counter() - screenshot_started) * 1000, 2),
+                )
             if self.page_executor.current_screenshot and is_dualtap_backend(self.config):
                 try:
+                    perturb_started = time.perf_counter()
                     self.page_executor.current_screenshot = perturb_screenshot_with_dualtap(
                         self.page_executor.current_screenshot,
                         config=self.config,
                     )
+                    if timing_enabled():
+                        log_timing(
+                            "Recorder",
+                            "screenshot_perturbed",
+                            trace_id=self.id,
+                            round=self.turn_number,
+                            elapsed_ms=round((time.perf_counter() - perturb_started) * 1000, 2),
+                        )
                 except Exception as e:
                     print(f"Warning: Failed to apply DualTAP perturbation to screenshot: {e}")
         
@@ -209,6 +230,14 @@ class JSONRecorder:
                 step["labeled_image"] = self.labeled_current_screenshot_path
                 print("Warning: No elements found for labeling, using original screenshot")
 
+        if timing_enabled():
+            log_timing(
+                "Recorder",
+                "update_before_done",
+                trace_id=self.id,
+                round=self.turn_number,
+                elapsed_ms=round((time.perf_counter() - started_at) * 1000, 2),
+            )
         self.contents.append(step)
 
     def dectect_auto_stop(self):

@@ -340,7 +340,7 @@ Pauses the execution for the given number of seconds. Default is 5 second.
 Ends the task and provides the final output. You can return the final output of the task as a string.
 Example: finish("Task completed")
 
-Privacy (SoM + DualTAP): The labeled screenshot may be privacy-protected on-device using imperceptible visual perturbation. Base your decisions on the numeric element tags and the XML hierarchy supplied alongside the image; they reflect the real layout and on-device text. Pass literal strings the task requires into text() as usual—there are no anonymized placeholder tokens in the UI stream.
+Privacy (SoM + DualTAP): The labeled screenshot may be privacy-protected on-device using imperceptible visual perturbation. You only receive this labeled image as observation—no separate UI/XML hierarchy is included in the prompt. Base your decisions on the numeric element tags and what you can infer from the screenshot; the tags identify which elements the runtime can target. Pass literal strings the task requires into text() as usual—there are no anonymized placeholder tokens in the UI stream.
 
 Now, given the following labeled screenshot, you need to think and call the function needed to proceed with the task. 
 Your output should include only action part in the given format:
@@ -476,7 +476,7 @@ Pauses the execution for the given number of seconds. Default is 5 second.
 Ends the task and provides the final output. You can return the final output of the task as a string.
 Example: finish("Task completed")
 
-Privacy (SoM + DualTAP): The labeled screenshot may be privacy-protected on-device using imperceptible visual perturbation. Base your decisions on the numeric element tags and the XML hierarchy supplied alongside the image; they reflect the real layout and on-device text. Pass literal strings the task requires into text() as usual—there are no anonymized placeholder tokens in the UI stream.
+Privacy (SoM + DualTAP): The labeled screenshot may be privacy-protected on-device using imperceptible visual perturbation. You only receive this labeled image as observation—no separate UI/XML hierarchy is included in the prompt. Base your decisions on the numeric element tags and what you can infer from the screenshot; the tags identify which elements the runtime can target. Pass literal strings the task requires into text() as usual—there are no anonymized placeholder tokens in the UI stream.
 
 The task you need to complete is to <task_description>. Your past actions to proceed with this task are summarized as 
 follows: <last_act>
@@ -544,7 +544,7 @@ Pauses the execution for the given number of seconds. Default is 5 second.
 Ends the task and provides the final output. You can return the final output of the task as a string.
 Example: finish("Task completed")
 
-Privacy (SoM + DualTAP): The labeled screenshot may be privacy-protected on-device using imperceptible visual perturbation. Base your decisions on the numeric element tags and the XML hierarchy supplied alongside the image; they reflect the real layout and on-device text. Pass literal strings the task requires into text() as usual—there are no anonymized placeholder tokens in the UI stream.
+Privacy (SoM + DualTAP): The labeled screenshot may be privacy-protected on-device using imperceptible visual perturbation. You only receive this labeled image as observation—no separate UI/XML hierarchy is included in the prompt. Base your decisions on the numeric element tags and what you can infer from the screenshot; the tags identify which elements the runtime can target. Pass literal strings the task requires into text() as usual—there are no anonymized placeholder tokens in the UI stream.
 
 Now, given the following labeled screenshot, you need to think and call the function needed to proceed with the task. 
 Your output should include Obs, Thought and Act in the given format:

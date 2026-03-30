@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from PIL import Image
+from utils_mobile.timing_debug import log_timing, timing_enabled
 
 
 DUALTAP_BACKEND = "dualtap"
@@ -18,6 +20,7 @@ _DEVICE_ENV_KEY = "DUALTAP_DEVICE"
 _SHARE_MODEL_ENV_KEY = "DUALTAP_SHARE_MODEL"
 
 _LOADED_RUNTIME_GLOBAL: Dict[Tuple[str, Optional[int]], Tuple[Any, Any, Any]] = {}
+_GLOBAL_RUNTIME_LOCK = threading.Lock()
 _tls = threading.local()
 
 
@@ -110,6 +113,7 @@ def _apply_device_to_dualtap_config(config: Any) -> None:
 
 
 def _load_dualtap_runtime_once(checkpoint_path: str, override_image_size: Optional[int] = None) -> Tuple[Any, Any, Any]:
+    started_at = time.perf_counter()
     _ensure_dualtap_importable()
     from config import Config  # type: ignore
     from inference import load_generator  # type: ignore
@@ -119,6 +123,15 @@ def _load_dualtap_runtime_once(checkpoint_path: str, override_image_size: Option
         config.image_size = override_image_size
     _apply_device_to_dualtap_config(config)
     generator, device = load_generator(checkpoint_path, config)
+    log_timing(
+        "DualTAP",
+        "runtime_loaded",
+        checkpoint=os.path.basename(checkpoint_path),
+        image_size=config.image_size,
+        device=device,
+        generator_id=id(generator),
+        elapsed_ms=round((time.perf_counter() - started_at) * 1000, 2),
+    )
     return (config, generator, device)
 
 
@@ -134,14 +147,35 @@ def _load_dualtap_runtime(checkpoint_path: str, override_image_size: Optional[in
     cache_key = (checkpoint_path, override_image_size)
 
     if _env_flag_true(_SHARE_MODEL_ENV_KEY):
+        cache_hit = cache_key in _LOADED_RUNTIME_GLOBAL
         if cache_key not in _LOADED_RUNTIME_GLOBAL:
-            _LOADED_RUNTIME_GLOBAL[cache_key] = _load_dualtap_runtime_once(checkpoint_path, override_image_size)
-        return _LOADED_RUNTIME_GLOBAL[cache_key]
+            with _GLOBAL_RUNTIME_LOCK:
+                cache_hit = cache_key in _LOADED_RUNTIME_GLOBAL
+                if cache_key not in _LOADED_RUNTIME_GLOBAL:
+                    _LOADED_RUNTIME_GLOBAL[cache_key] = _load_dualtap_runtime_once(checkpoint_path, override_image_size)
+        runtime = _LOADED_RUNTIME_GLOBAL[cache_key]
+        log_timing(
+            "DualTAP",
+            "runtime_acquired",
+            scope="global",
+            cache_hit=cache_hit,
+            generator_id=id(runtime[1]),
+        )
+        return runtime
 
     per_thread = _thread_local_runtimes()
+    cache_hit = cache_key in per_thread
     if cache_key not in per_thread:
         per_thread[cache_key] = _load_dualtap_runtime_once(checkpoint_path, override_image_size)
-    return per_thread[cache_key]
+    runtime = per_thread[cache_key]
+    log_timing(
+        "DualTAP",
+        "runtime_acquired",
+        scope="thread_local",
+        cache_hit=cache_hit,
+        generator_id=id(runtime[1]),
+    )
+    return runtime
 
 
 def _default_dualtap_output_path(image_path: str) -> str:
@@ -152,6 +186,7 @@ def _default_dualtap_output_path(image_path: str) -> str:
 
 
 def perturb_screenshot_with_dualtap(image_path: str, config: Any = None, output_path: Optional[str] = None) -> str:
+    started_at = time.perf_counter()
     checkpoint_path = resolve_dualtap_checkpoint(config)
     if not checkpoint_path:
         raise ValueError(
@@ -185,4 +220,14 @@ def perturb_screenshot_with_dualtap(image_path: str, config: Any = None, output_
     temp_path = f"{target_path}.dualtap_tmp.png"
     adversarial_image.save(temp_path)
     os.replace(temp_path, target_path)
+    if timing_enabled():
+        log_timing(
+            "DualTAP",
+            "perturb_done",
+            image=os.path.basename(image_path),
+            original_size=f"{original_size[0]}x{original_size[1]}",
+            target=os.path.basename(target_path),
+            elapsed_ms=round((time.perf_counter() - started_at) * 1000, 2),
+            generator_id=id(generator),
+        )
     return target_path

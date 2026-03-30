@@ -61,3 +61,5 @@ debug.md
 configs/1*.yaml
 eval*.sh
 run*.sh
+/test_pic
+generator_epoch_10.pth
