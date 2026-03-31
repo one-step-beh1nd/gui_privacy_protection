@@ -57,5 +57,7 @@ AppAgent/apps/*
 %local%*
 *.xlsx
 debug.md
-
+eval*.sh
+generator*.pth
+run*.sh
 configs/1*.yaml

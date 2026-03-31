@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from .constants import _HASH_ALPHABET, GLINER_DETECTION_THRESHOLD
@@ -427,25 +428,25 @@ Output ONLY the JSON object above and nothing else.
 # ---------------------------------------------------------------------- #
 # Global instance management
 # ---------------------------------------------------------------------- #
-_privacy_layer: Optional[PrivacyProtectionLayer] = None
+_privacy_layer_local = threading.local()
 
 
 def get_privacy_layer() -> PrivacyProtectionLayer:
-    """Get the global privacy protection layer instance."""
-    global _privacy_layer
-    if _privacy_layer is None:
+    """Get the privacy protection layer instance for the current thread."""
+    layer = getattr(_privacy_layer_local, "instance", None)
+    if layer is None:
         try:
-            _privacy_layer = PrivacyProtectionLayer(enabled=True)
+            layer = PrivacyProtectionLayer(enabled=True)
         except Exception as e:
             print(f"[PrivacyProtection] Warning: Failed to initialize privacy layer: {e}")
-            _privacy_layer = PrivacyProtectionLayer(enabled=False)
-    return _privacy_layer
+            layer = PrivacyProtectionLayer(enabled=False)
+        _privacy_layer_local.instance = layer
+    return layer
 
 
 def set_privacy_layer(layer: PrivacyProtectionLayer):
-    """Set the global privacy protection layer instance."""
-    global _privacy_layer
-    _privacy_layer = layer
+    """Set the privacy protection layer instance for the current thread."""
+    _privacy_layer_local.instance = layer
 
 
 def cloud_agent_compute_with_tokens(

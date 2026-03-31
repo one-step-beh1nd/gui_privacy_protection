@@ -1,5 +1,6 @@
 import datetime
 import time
+from agent import get_agent
 from evaluation.configs import TaskConfig
 from evaluation.docker_utils import create_docker_container, execute_command_in_container, remove_docker_container, \
     start_avd, stop_avd
@@ -198,6 +199,17 @@ class AutoTest():
     def __init__(self, config: TaskConfig) -> None:
         self.config = config
 
+    @staticmethod
+    def build_task_agent(task_dict):
+        if "agent" in task_dict:
+            return task_dict["agent"]
+
+        agent_name = task_dict.get("agent_name")
+        agent_args = task_dict.get("agent_args", {})
+        if not agent_name:
+            raise ValueError("Task is missing agent configuration.")
+        return get_agent(agent_name, **agent_args)
+
     def prepare_for_task(self):
         os.makedirs(self.config.save_dir, exist_ok=True)
         self.config.task_dir = os.path.join(self.config.save_dir, self.config.task_name)
@@ -264,7 +276,7 @@ class AutoTest():
             self.command_per_step = None
         self.prepare_for_task()
         self.start_emulator(instance)
-        self.llm_agent = task_dict["agent"]
+        self.llm_agent = self.build_task_agent(task_dict)
 
         print_with_color(self.instruction, "green")
         round_count = 0

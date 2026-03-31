@@ -1,5 +1,8 @@
+import concurrent.futures
+import copy
+import time
 from queue import Queue
-import concurrent
+
 from evaluation.auto_test import *
 
 
@@ -9,6 +12,7 @@ def task_done_callback(future, docker_instance, free_dockers):
 
 def parallel_worker(class_, config, parallel, tasks):
     free_dockers = Queue()
+    futures = []
     for idx in range(parallel):
         if config.docker:
             instance = Docker_Instance(config, idx)
@@ -30,3 +34,7 @@ def parallel_worker(class_, config, parallel, tasks):
 
             future = executor.submit(auto_class.run_task, task, instance)
             future.add_done_callback(lambda fut, di=instance: task_done_callback(fut, di, free_dockers))
+            futures.append(future)
+
+        for future in concurrent.futures.as_completed(futures):
+            future.result()

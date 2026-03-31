@@ -5,10 +5,10 @@ import yaml
 import json
 import glob
 
-from agent import get_agent
 from evaluation.auto_test import *
 from generate_result import find_all_task_files
 from evaluation.configs import AppConfig, TaskConfig
+from evaluation.parallel import parallel_worker
 
 
 def calculate_overall_anonymization_stats(task_dir: str):
@@ -146,6 +146,7 @@ if __name__ == '__main__':
     arg_parser.add_argument("--task_id", nargs="+", default=None)
     arg_parser.add_argument("--debug", action="store_true", default=False)
     arg_parser.add_argument("--app", nargs="+", default=None)
+    arg_parser.add_argument("-p", "--parallel", default=1, type=int)
 
     args = arg_parser.parse_args()
     with open(args.config, "r") as file:
@@ -161,7 +162,6 @@ if __name__ == '__main__':
     single_config = single_config.add_config(eval_config)
     if "True" == agent_config.get("relative_bbox"):
         single_config.is_relative_bbox = True
-    agent = get_agent(agent_config["name"], **agent_config["args"])
 
     task_files = find_all_task_files(args.task_config)
     if os.path.exists(os.path.join(single_config.save_dir, args.name)):
@@ -201,7 +201,8 @@ if __name__ == '__main__':
 
             task_instruction = f"You should use {app} to complete the following task: {task_instruction}"
             all_task_start_info.append({
-                "agent": agent,
+                "agent_name": agent_config["name"],
+                "agent_args": dict(agent_config["args"]),
                 "task_id": task_id,
                 "task_instruction": task_instruction,
                 "package": package,
@@ -214,7 +215,13 @@ if __name__ == '__main__':
         raise AttributeError(f"Class {autotask_class} not found. Please check the class name in the config file.")
 
     Auto_Test = class_(single_config.subdir_config(args.name))
-    Auto_Test.run_serial(all_task_start_info)
+    if args.parallel < 1:
+        raise ValueError("--parallel must be at least 1")
+
+    if args.parallel == 1:
+        Auto_Test.run_serial(all_task_start_info)
+    else:
+        parallel_worker(class_, single_config.subdir_config(args.name), args.parallel, all_task_start_info.copy())
     
     # Calculate and save overall anonymization statistics
     task_dir = os.path.abspath(single_config.subdir_config(args.name).save_dir)
