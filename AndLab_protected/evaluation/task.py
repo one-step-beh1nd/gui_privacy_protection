@@ -140,13 +140,17 @@ def deanonymize_text_content(text: Any, token_mapping: Optional[Dict[str, str]] 
         result = result.replace(token, real_value)
 
     privacy_layer = get_privacy_layer()
-    if getattr(privacy_layer, "token_to_real", None):
+    if privacy_layer.supports_token_mapping() and getattr(privacy_layer, "token_to_real", None):
         result = privacy_layer.convert_token_to_real(result)
 
     def replace_unresolved(match):
         token = match.group(1)
         real_value = mapping.get(token)
-        if real_value is None and getattr(privacy_layer, "token_to_real", None):
+        if (
+            real_value is None
+            and privacy_layer.supports_token_mapping()
+            and getattr(privacy_layer, "token_to_real", None)
+        ):
             real_value = privacy_layer.token_to_real.get(token)
         return real_value if isinstance(real_value, str) else match.group(0)
 
@@ -268,10 +272,15 @@ class Evaluation_Task(Generic[T_INPUT, T_OUTPUT, T_TARGET]):
         
         # Store mapping in metric instance so check_answer can use it
         # This avoids race conditions when multiple tasks evaluate concurrently
+        privacy_layer = get_privacy_layer()
         if local_token_to_real:
             metric.token_mapping = local_token_to_real
         else:
             metric.token_mapping = None
+            if getattr(privacy_layer, "token_to_real", None):
+                privacy_layer.token_to_real.clear()
+            if getattr(privacy_layer, "real_to_token", None):
+                privacy_layer.real_to_token.clear()
 
         all_operation_trace = []
         all_images = []
@@ -365,9 +374,9 @@ class Evaluation_Task(Generic[T_INPUT, T_OUTPUT, T_TARGET]):
         self.save_single(task, final_result)
         
         # Clear token mapping after evaluation to avoid mixing mappings from different tasks
-        if local_token_to_real:
-            privacy_layer = get_privacy_layer()
+        if getattr(privacy_layer, "token_to_real", None):
             privacy_layer.token_to_real.clear()
+        if getattr(privacy_layer, "real_to_token", None):
             privacy_layer.real_to_token.clear()
 
     def evaluate_old(self) -> Dict[str, Any]:

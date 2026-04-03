@@ -26,3 +26,8 @@ privacy:
   enabled: false
   method: none
   args: {}
+
+privacy:
+  enabled: true
+  method: token_anonymization
+  args: {}

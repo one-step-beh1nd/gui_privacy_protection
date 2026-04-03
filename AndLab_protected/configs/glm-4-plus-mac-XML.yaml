@@ -22,3 +22,7 @@ eval:
   show_avd: false
 
 
+privacy:
+  enabled: true
+  method: token_anonymization
+  args: {}

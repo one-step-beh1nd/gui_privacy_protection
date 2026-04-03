@@ -19,9 +19,11 @@ from .layer import (
     PrivacyProtectionLayer,
     cloud_agent_compute_with_tokens,
 )
+from .full_cover import FullCoverPrivacyProtectionLayer
 
 __all__ = [
     "BasePrivacyProtectionLayer",
+    "FullCoverPrivacyProtectionLayer",
     "NoPrivacyProtectionLayer",
     "PrivacyConfig",
     "PrivacyProtectionLayer",

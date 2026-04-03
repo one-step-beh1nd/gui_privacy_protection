@@ -64,6 +64,9 @@ GLINER_PII_LABELS = [
 # GLiNER detection threshold (configurable)
 GLINER_DETECTION_THRESHOLD = 0.5
 
+# Fixed placeholder surface shown to the model in full-cover mode.
+PII_FIXED_PLACEHOLDER = "[Privacy Information]"
+
 # XML keywords and structural elements that should never be masked
 # These are common in compressed XML format like: [id] url#class ;click ; ;;text:
 # Note: Only structural elements are exempted, not user-visible text content

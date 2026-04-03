@@ -51,11 +51,37 @@ class PrivacyConfig:
         return cls(enabled=bool(enabled), method=str(method), args=dict(args))
 
 
+_TOKEN_TEXT_NOTICE_RE = re.compile(
+    r"\nWhenever you need to pass literal values into `do`, `finish`, or any custom helper .*?plaintext yourself\.\n",
+    re.DOTALL,
+)
+_TOKEN_SCREEN_NOTICE_RE = re.compile(
+    r'\nWhenever you pass literal values \(text, IDs, etc\.\) into any of the functions above, remember that the values you observe in the UI might either be the real values or anonymized tokens such as "phone_number#0abc1"\..*?plaintext on your own\.\n',
+    re.DOTALL,
+)
+_FULL_COVER_TEXT_NOTICE = (
+    '\nWhenever you need to pass literal values into `do` or `finish` (for example '
+    'when typing text or specifying identifiers), remember that sensitive values in '
+    'the XML may appear as the fixed placeholder "[Privacy Information]". Treat it '
+    "as a privacy-preserving mask, do not guess the hidden plaintext, and complete "
+    "the task using only the information that is actually visible.\n"
+)
+_FULL_COVER_SCREEN_NOTICE = (
+    '\nWhenever you pass literal values (text, IDs, etc.) into any of the functions '
+    'above, remember that sensitive values in the UI may appear as the fixed '
+    'placeholder "[Privacy Information]". Treat it as a privacy-preserving mask, do '
+    "not guess the hidden plaintext, and complete the task using only the "
+    "information that is actually visible on the current screen.\n"
+)
+
+
 def _strip_privacy_prompt_content(text: str) -> str:
     if not text:
         return text
 
     patterns = [
+        _TOKEN_TEXT_NOTICE_RE.pattern,
+        _TOKEN_SCREEN_NOTICE_RE.pattern,
         r"\nWhenever you need to pass literal values.*?plaintext yourself\.\n",
         r"\nWhenever you pass literal values.*?plaintext on your own\.\n",
         r"\n```\ndef cloud_agent_compute_with_tokens\(anon_tokens: List\[str\], compute_instruction: str, usage_reason: str\):.*?```\n",
@@ -66,6 +92,34 @@ def _strip_privacy_prompt_content(text: str) -> str:
     for pattern in patterns:
         cleaned = re.sub(pattern, "\n", cleaned, flags=re.DOTALL)
     return cleaned
+
+
+def _transform_prompt_for_full_cover(text: str) -> str:
+    if not text:
+        return text
+
+    transformed = _TOKEN_TEXT_NOTICE_RE.sub(_FULL_COVER_TEXT_NOTICE, text)
+    transformed = _TOKEN_SCREEN_NOTICE_RE.sub(_FULL_COVER_SCREEN_NOTICE, transformed)
+    transformed = _strip_privacy_prompt_content(transformed)
+
+    if _FULL_COVER_TEXT_NOTICE.strip() not in transformed and "\n# A toy example\n" in transformed:
+        transformed = transformed.replace(
+            "\n# A toy example\n",
+            f"{_FULL_COVER_TEXT_NOTICE}\n# A toy example\n",
+            1,
+        )
+
+    if (
+        _FULL_COVER_SCREEN_NOTICE.strip() not in transformed
+        and "\nNow, given the following labeled screenshot" in transformed
+    ):
+        transformed = transformed.replace(
+            "\nNow, given the following labeled screenshot",
+            f"{_FULL_COVER_SCREEN_NOTICE}\nNow, given the following labeled screenshot",
+            1,
+        )
+
+    return transformed
 
 
 class BasePrivacyProtectionLayer:
