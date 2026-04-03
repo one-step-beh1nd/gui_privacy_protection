@@ -11,6 +11,7 @@ This file exists solely to preserve existing import paths such as:
 
 from utils_mobile.privacy import (  # noqa: F401
     BasePrivacyProtectionLayer,
+    DualTapPrivacyProtectionLayer,
     FullCoverPrivacyProtectionLayer,
     NoPrivacyProtectionLayer,
     PrivacyConfig,

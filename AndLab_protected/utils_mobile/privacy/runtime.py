@@ -73,6 +73,15 @@ _FULL_COVER_SCREEN_NOTICE = (
     "not guess the hidden plaintext, and complete the task using only the "
     "information that is actually visible on the current screen.\n"
 )
+_DUALTAP_SCREEN_NOTICE = (
+    "\nPrivacy (SoM + DualTAP): The labeled screenshot may be privacy-protected "
+    "on-device using imperceptible visual perturbation. You only receive this "
+    "labeled image as observation-no separate UI/XML hierarchy is included in "
+    "the prompt. Base your decisions on the numeric element tags and what you "
+    "can infer from the screenshot; the tags identify which elements the runtime "
+    "can target. Pass literal strings the task requires into text() as usual-there "
+    "are no anonymized placeholder tokens in the UI stream.\n"
+)
 
 
 def _strip_privacy_prompt_content(text: str) -> str:
@@ -119,6 +128,20 @@ def _transform_prompt_for_full_cover(text: str) -> str:
             1,
         )
 
+    return transformed
+
+
+def _transform_prompt_for_dualtap(text: str) -> str:
+    if not text or "\nNow, given the following labeled screenshot" not in text:
+        return text
+
+    transformed = _strip_privacy_prompt_content(text)
+    if _DUALTAP_SCREEN_NOTICE.strip() not in transformed:
+        transformed = transformed.replace(
+            "\nNow, given the following labeled screenshot",
+            f"{_DUALTAP_SCREEN_NOTICE}\nNow, given the following labeled screenshot",
+            1,
+        )
     return transformed
 
 
