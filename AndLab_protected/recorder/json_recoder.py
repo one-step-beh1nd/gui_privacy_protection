@@ -27,12 +27,12 @@ def get_compressed_xml(xml_path, type="plain_text", version="v1"):
 
 
 class JSONRecorder:
-    def __init__(self, id, instruction, anonymized_instruction, page_executor, config):
+    def __init__(self, id, instruction, anonymized_instruction=None, page_executor=None, config=None):
         self.id = id
         # 原始用户任务指令（未匿名）
         self.instruction = instruction
-        # 匿名后的任务指令（发给云端 agent 的版本）
-        self.anonymized_instruction = anonymized_instruction
+        # 运行时发送给 agent 的任务指令（关闭隐私时等于原始指令）
+        self.anonymized_instruction = anonymized_instruction if anonymized_instruction is not None else instruction
         self.page_executor = page_executor
 
         self.turn_number = 0
@@ -121,17 +121,14 @@ class JSONRecorder:
         
         if need_screenshot:
             self.page_executor.update_screenshot(prefix=str(self.turn_number), suffix="before")
-            # Apply privacy protection to screenshot
-            if privacy_layer.enabled and self.page_executor.current_screenshot:
-                try:
-                    masked_image_path, new_tokens = privacy_layer.identify_and_mask_screenshot(
-                        self.page_executor.current_screenshot
-                    )
-                    # Update screenshot path to masked version
-                    if masked_image_path != self.page_executor.current_screenshot:
-                        self.page_executor.current_screenshot = masked_image_path
-                except Exception as e:
-                    print(f"Warning: Failed to apply privacy protection to screenshot: {e}")
+            try:
+                processed_image_path, _ = privacy_layer.process_screenshot(
+                    self.page_executor.current_screenshot
+                )
+                if processed_image_path:
+                    self.page_executor.current_screenshot = processed_image_path
+            except Exception as e:
+                print(f"Warning: Failed to apply privacy processing to screenshot: {e}")
         
         xml_path = None
         ac_xml_path = None
@@ -179,6 +176,7 @@ class JSONRecorder:
             "target": self.instruction,
             "original_instruction": self.instruction,
             "anonymized_instruction": self.anonymized_instruction,
+            "privacy_method": getattr(privacy_layer, "method_name", "none"),
         }
         step = self.test_per_step(step, controller)
         if need_labeled:
@@ -249,26 +247,16 @@ class JSONRecorder:
         
         xml_compressed = get_compressed_xml(xml_path, version=self.xml_compressed_version)
         
-        # Apply privacy protection: mask sensitive information in compressed XML only
-        # IMPORTANT: This uses the same PrivacyProtectionLayer instance that was used for
-        # anonymizing the instruction, so entities that appeared in the instruction will
-        # be mapped to the same tokens (via _get_or_create_token which checks real_to_token first).
         privacy_layer = get_privacy_layer()
-        if privacy_layer.enabled and xml_compressed:
+        if xml_compressed:
             try:
-                # Only mask the compressed XML (not the original XML)
-                # identify_and_mask_xml is designed for compressed XML format
-                # It will reuse tokens from instruction anonymization if the same entities are found
-                masked_xml_compressed, new_tokens = privacy_layer.identify_and_mask_xml(xml_compressed)
-                xml_compressed = masked_xml_compressed
+                processed_xml, new_tokens = privacy_layer.process_xml_text(xml_compressed)
+                if processed_xml is not None:
+                    xml_compressed = processed_xml
                 if new_tokens:
                     print(f"[PrivacyProtection] XML anonymization: {len(new_tokens)} new tokens created")
             except Exception as e:
-                print(f"Warning: Failed to apply privacy protection to compressed XML: {e}")
-        elif not privacy_layer.enabled:
-            print("[PrivacyProtection] Privacy protection is disabled, XML will not be anonymized")
-        elif not xml_compressed:
-            print("[PrivacyProtection] Warning: compressed XML is empty, skipping anonymization")
+                print(f"Warning: Failed to apply privacy processing to compressed XML: {e}")
         
         with open(os.path.join(self.xml_file_path, f"{self.turn_number}_compressed_xml.txt"), 'w',
                   encoding='utf-8') as f:
@@ -328,6 +316,9 @@ class JSONRecorder:
             turn_number: The turn number (if None, uses self.turn_number)
             stage: Optional stage identifier (e.g., "query", "referring" for SeeAct tasks)
         """
+        if not get_privacy_layer().should_save_prompts():
+            return
+
         if turn_number is None:
             turn_number = self.turn_number
         

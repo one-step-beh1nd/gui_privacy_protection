@@ -1,7 +1,7 @@
 import importlib
 import os
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 import yaml
 
@@ -91,6 +91,38 @@ class AppConfig_Sample:
 
 
 @dataclass
+class PrivacyConfig:
+    enabled: bool = True
+    method: str = "token_anonymization"
+    args: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_raw(cls, raw):
+        if raw is None:
+            return cls()
+        if isinstance(raw, cls):
+            return cls(enabled=raw.enabled, method=raw.method, args=dict(raw.args))
+        if not isinstance(raw, dict):
+            raise TypeError("privacy config must be a mapping")
+
+        enabled = raw.get("enabled")
+        method = raw.get("method")
+        args = raw.get("args")
+
+        if enabled is None:
+            enabled = method not in {None, "", "none"}
+        if method in {None, ""}:
+            method = "token_anonymization" if enabled else "none"
+        if not enabled:
+            method = "none"
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            raise TypeError("privacy.args must be a mapping")
+        return cls(enabled=bool(enabled), method=str(method), args=dict(args))
+
+
+@dataclass
 class TaskConfig:
     save_dir: str
     max_rounds: int
@@ -107,15 +139,18 @@ class TaskConfig:
     sample: Optional[bool] = False
     show_avd: Optional[bool] = False
     version: Optional[str] = None
+    privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
 
     def subdir_config(self, subdir: str):
         new_config = self.__dict__.copy()
         new_config["save_dir"] = os.path.join(self.save_dir, subdir)
         # new_config["task_id"] = task_id
+        new_config["privacy"] = PrivacyConfig.from_raw(new_config.get("privacy"))
         return TaskConfig(**new_config)
 
     def add_config(self, config):
         new_config = self.__dict__.copy()
         for key, values in config.items():
             new_config[key] = values
+        new_config["privacy"] = PrivacyConfig.from_raw(new_config.get("privacy"))
         return TaskConfig(**new_config)

@@ -384,7 +384,10 @@ class MultiScreenshotEvaluationTask(Evaluation_Task):
             return
 
         task_trace_root = self.traces[task_id]["trace_root"]
-        local_token_to_real = load_task_token_mapping(task_trace_root)
+        local_token_to_real = load_task_token_mapping(
+            task_trace_root,
+            trace_file=self.traces[task_id]["trace_file"],
+        )
         if local_token_to_real:
             metric.token_mapping = local_token_to_real
 

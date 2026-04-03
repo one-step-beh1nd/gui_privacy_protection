@@ -10,8 +10,13 @@ This file exists solely to preserve existing import paths such as:
 """
 
 from utils_mobile.privacy import (  # noqa: F401
+    BasePrivacyProtectionLayer,
+    NoPrivacyProtectionLayer,
+    PrivacyConfig,
     PrivacyProtectionLayer,
+    create_privacy_layer,
     get_privacy_layer,
+    register_privacy_strategy,
     set_privacy_layer,
     cloud_agent_compute_with_tokens,
     GLINER_PII_LABELS,

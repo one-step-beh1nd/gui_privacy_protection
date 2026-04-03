@@ -9,9 +9,14 @@ import json
 
 
 def _with_privacy_notice(instruction: str) -> str:
-    """Attach a short privacy note so the agent understands placeholders."""
+    """Allow the active privacy strategy to decorate task instructions."""
     privacy_layer = get_privacy_layer()
-    return privacy_layer.attach_notice(instruction) if privacy_layer.enabled else instruction
+    return privacy_layer.decorate_instruction_for_prompt(instruction)
+
+
+def _with_privacy_prompt(prompt_text: str) -> str:
+    privacy_layer = get_privacy_layer()
+    return privacy_layer.transform_prompt_text(prompt_text)
 
 
 class AutoTask():
@@ -32,7 +37,7 @@ class AutoTask():
     def set_system_prompt(self, instruction):
         self.record.history = [{
             "role": "system",
-            "content": self.agent.system_prompt(_with_privacy_notice(instruction))
+            "content": _with_privacy_prompt(self.agent.system_prompt(_with_privacy_notice(instruction)))
         }]
 
     def run_step(self, round_count):
@@ -64,7 +69,9 @@ class TextOnlyTask(AutoTask):
     def set_system_prompt(self, instruction):
         self.record.history = [{
             "role": "system",
-            "content": SYSTEM_PROMPT_ANDROID_TEXT_GPT + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            "content": _with_privacy_prompt(
+                SYSTEM_PROMPT_ANDROID_TEXT_GPT + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            )
         }]
 
 
@@ -95,7 +102,9 @@ class ScreenshotTask(TextOnlyTask):
     def set_system_prompt(self, instruction):
         self.record.history = [{
             "role": "system",
-            "content": SYSTEM_PROMPT_ANDROID_MLLM_DIRECT + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            "content": _with_privacy_prompt(
+                SYSTEM_PROMPT_ANDROID_MLLM_DIRECT + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            )
         }]
 
 
@@ -124,7 +133,9 @@ class CogAgentTask(TextOnlyTask):
     def set_system_prompt(self, instruction):
         self.record.history = [{
             "role": "system",
-            "content": SYSTEM_PROMPT_ANDROID_MLLM_CogAgent + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            "content": _with_privacy_prompt(
+                SYSTEM_PROMPT_ANDROID_MLLM_CogAgent + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            )
         }]
 
 
@@ -132,7 +143,9 @@ class ScreenshotReactTask(ScreenshotTask):
     def set_system_prompt(self, instruction):
         self.record.history = [{
             "role": "system",
-            "content": SYSTEM_PROMPT_ANDROID_MLLM_DIRECT_REACT + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            "content": _with_privacy_prompt(
+                SYSTEM_PROMPT_ANDROID_MLLM_DIRECT_REACT + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            )
         }]
 
 
@@ -141,7 +154,7 @@ class ScreenSeeActTask(TextOnlyTask):
     def set_system_prompt(self, instruction):
         self.record.history = [{
             "role": "system",
-            "content": SeeActPrompts.QUERY_SYSTEM_PROMPT
+            "content": _with_privacy_prompt(SeeActPrompts.QUERY_SYSTEM_PROMPT)
         }]
         self.stage_one_record = []
         self.instruction = instruction
@@ -153,15 +166,15 @@ class ScreenSeeActTask(TextOnlyTask):
             xml_tree = self.record.get_latest_xml_tree()
             choices_list = extract_bounds(xml_tree)
             image_path = self.page_executor.current_screenshot
-            system_prompt = SeeActPrompts.QUERY_SYSTEM_PROMPT
-            query_user_prompt = SeeActPrompts.QUERY_USER_PROMPT.format(
+            system_prompt = _with_privacy_prompt(SeeActPrompts.QUERY_SYSTEM_PROMPT)
+            query_user_prompt = _with_privacy_prompt(SeeActPrompts.QUERY_USER_PROMPT.format(
                 task=_with_privacy_notice(self.instruction),
                 previous_actions=("\n\n".join(self.stage_one_record) or "None")
-            )
+            ))
             query_message = self.agent.prompt_to_message(query_user_prompt, [image_path])
-            referring_user_prompt = SeeActPrompts.REFERRING_USER_PROMPT.format(
+            referring_user_prompt = _with_privacy_prompt(SeeActPrompts.REFERRING_USER_PROMPT.format(
                 option_prompt="\n".join(f"{item['key']} | {item['value']}" for item in choices_list)
-            )
+            ))
 
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -210,7 +223,7 @@ class TextOnlySeeActTask(TextOnlyTask):
     def set_system_prompt(self, instruction):
         self.record.history = [{
             "role": "system",
-            "content": SeeActPrompts_xml.QUERY_SYSTEM_PROMPT
+            "content": _with_privacy_prompt(SeeActPrompts_xml.QUERY_SYSTEM_PROMPT)
         }]
         self.stage_one_record = []
         self.instruction = instruction
@@ -224,17 +237,17 @@ class TextOnlySeeActTask(TextOnlyTask):
             xml_text = self.record.get_latest_xml()
             choices_list = extract_bounds(xml_tree)
             image_path = self.page_executor.current_screenshot
-            system_prompt = SeeActPrompts_xml.QUERY_SYSTEM_PROMPT
-            query_user_prompt = SeeActPrompts_xml.QUERY_USER_PROMPT.format(
+            system_prompt = _with_privacy_prompt(SeeActPrompts_xml.QUERY_SYSTEM_PROMPT)
+            query_user_prompt = _with_privacy_prompt(SeeActPrompts_xml.QUERY_USER_PROMPT.format(
                 task=_with_privacy_notice(self.instruction),
                 previous_actions=("\n\n".join(self.stage_one_record) or "None"),
                 xml_compressed=xml_text
-            )
+            ))
             query_message = {"role": "user", "content": query_user_prompt}
 
-            referring_user_prompt = SeeActPrompts_xml.REFERRING_USER_PROMPT.format(
+            referring_user_prompt = _with_privacy_prompt(SeeActPrompts_xml.REFERRING_USER_PROMPT.format(
                 option_prompt="\n".join(f"{item['key']} | {item['value']}" for item in choices_list)
-            )
+            ))
 
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -282,7 +295,9 @@ class TextOnlyReactTask(TextOnlyTask):
     def set_system_prompt(self, instruction):
         self.record.history = [{
             "role": "system",
-            "content": SYSTEM_PROMPT_ANDROID_TEXT_ReAct + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            "content": _with_privacy_prompt(
+                SYSTEM_PROMPT_ANDROID_TEXT_ReAct + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            )
         }]
 
 
@@ -290,7 +305,9 @@ class TextOnlyFineTuneTask(TextOnlyTask):
     def set_system_prompt(self, instruction):
         self.record.history = [{
             "role": "system",
-            "content": SYSTEM_PROMPT_ANDROID_TEXT_GLM_v1_5 + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            "content": _with_privacy_prompt(
+                SYSTEM_PROMPT_ANDROID_TEXT_GLM_v1_5 + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            )
         }]
 
     def run_step(self, round_count):
@@ -317,5 +334,7 @@ class TextOnlyFineTuneTask_long(TextOnlyFineTuneTask):
     def set_system_prompt(self, instruction):
         self.record.history = [{
             "role": "system",
-            "content": SYSTEM_PROMPT_ANDROID_TEXT_GPT + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            "content": _with_privacy_prompt(
+                SYSTEM_PROMPT_ANDROID_TEXT_GPT + f"\n\nTask Instruction: {_with_privacy_notice(instruction)}"
+            )
         }]

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from .constants import _HASH_ALPHABET, GLINER_DETECTION_THRESHOLD
@@ -22,23 +21,33 @@ from .local_llm import _run_local_llm
 from .detection import DetectionMixin
 from .screenshot import ScreenshotMixin
 from .stats import StatsMixin
+from .runtime import (
+    BasePrivacyProtectionLayer,
+    PrivacyConfig,
+    get_privacy_layer,
+    register_privacy_strategy,
+    set_privacy_layer,
+)
 
 
-class PrivacyProtectionLayer(DetectionMixin, ScreenshotMixin, StatsMixin):
+class PrivacyProtectionLayer(BasePrivacyProtectionLayer, DetectionMixin, ScreenshotMixin, StatsMixin):
     """
     Privacy protection layer that masks sensitive information and manages token mapping.
     """
 
-    def __init__(self, enabled: bool = True):
+    method_name = "token_anonymization"
+
+    def __init__(self, enabled: bool = True, config: Optional[PrivacyConfig] = None):
         """
         Initialize the privacy protection layer.
 
         Args:
             enabled: Whether privacy protection is enabled.
         """
-        self.enabled = enabled
-        self.token_to_real: Dict[str, str] = {}
-        self.real_to_token: Dict[str, str] = {}
+        super().__init__(
+            enabled=enabled,
+            config=config or PrivacyConfig(enabled=enabled, method=self.method_name),
+        )
         # Store entity types for each real value (real_value -> entity_type)
         # This allows us to override entity types from Image NER with Prompt NER types
         self.real_to_entity_type: Dict[str, str] = {}
@@ -60,13 +69,16 @@ class PrivacyProtectionLayer(DetectionMixin, ScreenshotMixin, StatsMixin):
         )
         # Statistics for anonymization
         self._anonymization_stats: List[Dict[str, Any]] = []
-        self._task_dir: Optional[str] = None
         # OCR text separator for screenshot anonymization (can be modified for testing)
-        self.ocr_separator: str = "[sep]"
+        self.ocr_separator: str = self.args.get("ocr_separator", "[sep]")
         # Color configuration for screenshot masking (background and text colors)
         # Format: (R, G, B) tuples with values 0-255
-        self.mask_background_color: Tuple[int, int, int] = (255, 0, 255)  # Magnenta
-        self.mask_text_color: Tuple[int, int, int] = (255, 255, 255)  # white text
+        self.mask_background_color: Tuple[int, int, int] = tuple(
+            self.args.get("mask_background_color", (255, 0, 255))
+        )  # Magnenta
+        self.mask_text_color: Tuple[int, int, int] = tuple(
+            self.args.get("mask_text_color", (255, 255, 255))
+        )  # white text
 
     # ---------------------------------------------------------------------- #
     # Token helpers
@@ -191,6 +203,37 @@ class PrivacyProtectionLayer(DetectionMixin, ScreenshotMixin, StatsMixin):
         if not self.enabled or not xml_content:
             return xml_content, {}
         return self.identify_and_mask_text(xml_content, is_xml=True)
+
+    def prepare_instruction(self, instruction: str) -> Tuple[str, Dict[str, str]]:
+        return self.anonymize_prompt(instruction)
+
+    def decorate_instruction_for_prompt(self, instruction: str) -> str:
+        return self.attach_notice(instruction)
+
+    def process_screenshot(self, image_path: Optional[str]) -> Tuple[Optional[str], Dict[str, str]]:
+        if not image_path:
+            return image_path, {}
+        return self.identify_and_mask_screenshot(image_path)
+
+    def process_xml_text(self, xml_text: Optional[str]) -> Tuple[Optional[str], Dict[str, str]]:
+        if not xml_text:
+            return xml_text, {}
+        return self.identify_and_mask_xml(xml_text)
+
+    def rewrite_action_input(self, command_or_text: Any) -> Any:
+        return self.convert_token_to_real(command_or_text)
+
+    def supports_cloud_api(self) -> bool:
+        return True
+
+    def should_save_prompts(self) -> bool:
+        return True
+
+    def should_collect_stats(self) -> bool:
+        return True
+
+    def supports_token_mapping(self) -> bool:
+        return True
 
     def convert_token_to_real(self, command_or_text: str) -> str:
         """
@@ -425,30 +468,6 @@ Output ONLY the JSON object above and nothing else.
         }
 
 
-# ---------------------------------------------------------------------- #
-# Global instance management
-# ---------------------------------------------------------------------- #
-_privacy_layer_local = threading.local()
-
-
-def get_privacy_layer() -> PrivacyProtectionLayer:
-    """Get the privacy protection layer instance for the current thread."""
-    layer = getattr(_privacy_layer_local, "instance", None)
-    if layer is None:
-        try:
-            layer = PrivacyProtectionLayer(enabled=True)
-        except Exception as e:
-            print(f"[PrivacyProtection] Warning: Failed to initialize privacy layer: {e}")
-            layer = PrivacyProtectionLayer(enabled=False)
-        _privacy_layer_local.instance = layer
-    return layer
-
-
-def set_privacy_layer(layer: PrivacyProtectionLayer):
-    """Set the privacy protection layer instance for the current thread."""
-    _privacy_layer_local.instance = layer
-
-
 def cloud_agent_compute_with_tokens(
     anon_tokens: List[str],
     compute_instruction: str,
@@ -473,3 +492,6 @@ def cloud_agent_compute_with_tokens(
         max_new_tokens=max_new_tokens,
         temperature=temperature,
     )
+
+
+register_privacy_strategy(PrivacyProtectionLayer.method_name, PrivacyProtectionLayer)

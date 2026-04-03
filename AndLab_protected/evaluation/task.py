@@ -33,6 +33,23 @@ def dump_xml(xml_path):
     return json.loads(xml_compressed)
 
 
+def load_task_privacy_method(trace_file: Optional[str]) -> Optional[str]:
+    if not trace_file or not os.path.exists(trace_file):
+        return None
+
+    try:
+        with jsonlines.open(trace_file) as reader:
+            for line in reader:
+                method = line.get("privacy_method")
+                if isinstance(method, str) and method:
+                    return method
+                break
+    except Exception:
+        return None
+
+    return None
+
+
 def deanonymize_xml_tree(xml_tree, token_mapping):
     """
     递归地将 XML 树中的匿名 token 还原为真实值。
@@ -71,10 +88,14 @@ def deanonymize_xml_tree(xml_tree, token_mapping):
         return xml_tree
 
 
-def load_task_token_mapping(task_trace_root: str) -> Dict[str, str]:
+def load_task_token_mapping(task_trace_root: str, trace_file: Optional[str] = None) -> Dict[str, str]:
     """
-    Load task-scoped token mapping even if the privacy layer is not currently enabled.
+    Load task-scoped token mapping for strategies that persist token artifacts.
     """
+    privacy_method = load_task_privacy_method(trace_file)
+    if privacy_method not in {None, "", "token_anonymization"}:
+        return {}
+
     privacy_layer = get_privacy_layer()
     token_mapping_loaded = privacy_layer.load_token_mapping(task_trace_root)
     if token_mapping_loaded and privacy_layer.token_to_real:
@@ -240,7 +261,10 @@ class Evaluation_Task(Generic[T_INPUT, T_OUTPUT, T_TARGET]):
         # anonymized to different tokens in different tasks
         # IMPORTANT: Copy mapping to local variable to avoid race conditions in concurrent evaluation
         task_trace_root = self.traces[task_id]['trace_root']
-        local_token_to_real = load_task_token_mapping(task_trace_root)
+        local_token_to_real = load_task_token_mapping(
+            task_trace_root,
+            trace_file=self.traces[task_id]['trace_file'],
+        )
         
         # Store mapping in metric instance so check_answer can use it
         # This avoids race conditions when multiple tasks evaluate concurrently

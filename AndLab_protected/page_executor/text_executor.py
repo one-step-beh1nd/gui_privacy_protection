@@ -7,7 +7,7 @@ from functools import partial
 
 from templates.packages import find_package
 from .utils import call_dino, plot_bbox
-from utils_mobile.privacy_protection import cloud_agent_compute_with_tokens
+from utils_mobile.privacy_protection import get_privacy_layer
 
 
 def remove_leading_zeros_in_string(s):
@@ -306,6 +306,25 @@ class TextOnlyExecutor:
         """
         assert "instruction" in kwargs, "instruction is required for Call_API"
         instruction = kwargs.get("instruction")
+        privacy_layer = get_privacy_layer()
+        if not privacy_layer.supports_cloud_api():
+            response = {
+                "approved": False,
+                "decision_reason": "Current privacy strategy does not enable local privacy APIs.",
+                "result": None,
+                "missing_tokens": [],
+                "raw_llm_output": "",
+            }
+            self.current_return = {
+                "operation": "do",
+                "action": "Call_API",
+                "kwargs": {
+                    "instruction": instruction,
+                    "response": response,
+                    "with_screen_info": False,
+                },
+            }
+            return
 
         # 解析 cloud_agent_compute_with_tokens(...) 形式的表达式
         anon_tokens, compute_instruction, usage_reason = self._parse_cloud_agent_compute_instruction(instruction)
@@ -322,11 +341,16 @@ class TextOnlyExecutor:
         # 本地大模型路径：优先从 config 读取，其次从环境变量，最后使用一个默认值
         import os
 
-        model_dir = getattr(self.config, "local_llm_model_dir", None) or os.environ.get(
+        privacy_args = getattr(getattr(self.config, "privacy", None), "args", {}) or {}
+        model_dir = (
+            privacy_args.get("local_llm_model_dir")
+            or getattr(self.config, "local_llm_model_dir", None)
+            or os.environ.get(
             "LOCAL_PRIVACY_LLM_DIR", "./Qwen3-8B"
+            )
         )
 
-        response = cloud_agent_compute_with_tokens(
+        response = privacy_layer.cloud_agent_compute_with_tokens(
             anon_tokens=anon_tokens,
             compute_instruction=compute_instruction,
             usage_reason=usage_reason,

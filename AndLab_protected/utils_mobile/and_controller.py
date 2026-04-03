@@ -35,15 +35,11 @@ class AndroidController:
         self.backslash = "\\"
 
     def execute_adb(self, adb_command, type="cmd", output=True):
-        # Convert tokens to real values before executing ADB command
         try:
             privacy_layer = get_privacy_layer()
-            if privacy_layer and privacy_layer.enabled:
-                adb_command = privacy_layer.convert_token_to_real(adb_command)
+            adb_command = privacy_layer.rewrite_action_input(adb_command)
         except Exception as e:
-            # If privacy layer conversion fails, log warning but continue with original command
             print_with_color(f"Warning: Failed to convert tokens in ADB command: {e}", "yellow")
-            # Continue with original command
         
         if type == "cmd":
             env = os.environ.copy()
@@ -198,14 +194,11 @@ class AndroidController:
         return ret
 
     def text(self, input_str):
-        # Convert token to real value before inputting text
         try:
             privacy_layer = get_privacy_layer()
-            if privacy_layer and privacy_layer.enabled:
-                input_str = privacy_layer.convert_token_to_real(input_str)
+            input_str = privacy_layer.rewrite_action_input(input_str)
         except Exception as e:
             print_with_color(f"Warning: Failed to convert tokens in input text: {e}", "yellow")
-            # Continue with original input_str
         
         # adb_command = f'adb -s {self.device} input keyevent KEYCODE_MOVE_END'
         # ret = self.execute_adb(adb_command, self.type)
@@ -276,14 +269,11 @@ class AndroidController:
         self.execute_adb(command, self.type)
 
     def run_command(self, command):
-        # Convert tokens to real values before running command
         try:
             privacy_layer = get_privacy_layer()
-            if privacy_layer and privacy_layer.enabled:
-                command = privacy_layer.convert_token_to_real(command)
+            command = privacy_layer.rewrite_action_input(command)
         except Exception as e:
             print_with_color(f"Warning: Failed to convert tokens in command: {e}", "yellow")
-            # Continue with original command
         
         command = command.replace("adb", f"adb -s {self.device} ")
         return self.execute_adb(command, self.type)

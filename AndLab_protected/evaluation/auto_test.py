@@ -11,7 +11,7 @@ from page_executor.simple_vision_executor import VisionExecutor
 from recorder import JSONRecorder
 from templates import *
 from templates.packages import find_package
-from utils_mobile.privacy_protection import get_privacy_layer
+from utils_mobile.privacy_protection import create_privacy_layer, get_privacy_layer, set_privacy_layer
 
 
 class Instance():
@@ -258,16 +258,17 @@ class AutoTest():
             "%Y-%m-%d_%H-%M-%S")
         # print(f"{task_id} running in {instance.container_id}")
 
+        set_privacy_layer(create_privacy_layer(self.config.privacy))
+
         # 保存原始任务指令与匿名后的指令
         self.original_instruction = task_dict['task_instruction']
         self.instruction = self.original_instruction
         privacy_layer = get_privacy_layer()
-        if privacy_layer.enabled:
-            try:
-                anonymized_instruction, _ = privacy_layer.anonymize_prompt(self.original_instruction)
-                self.instruction = anonymized_instruction
-            except Exception as exc:
-                print_with_color(f"[PrivacyProtection] prompt anonymization failed: {exc}", "red")
+        try:
+            runtime_instruction, _ = privacy_layer.prepare_instruction(self.original_instruction)
+            self.instruction = runtime_instruction
+        except Exception as exc:
+            print_with_color(f"[PrivacyProtection] instruction preparation failed: {exc}", "red")
 
         self.app = task_dict['app']
         if not self.config.sample:
@@ -315,9 +316,8 @@ class AutoTest():
                 print_with_color(f"Error: {e}", "red")
                 break
 
-        # Save privacy protection statistics before stopping the task
         privacy_layer = get_privacy_layer()
-        if privacy_layer.enabled:
+        if privacy_layer.should_collect_stats():
             try:
                 privacy_layer.save_stats()
             except Exception as e:

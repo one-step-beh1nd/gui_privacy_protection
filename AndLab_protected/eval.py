@@ -7,7 +7,7 @@ import glob
 
 from evaluation.auto_test import *
 from generate_result import find_all_task_files
-from evaluation.configs import AppConfig, TaskConfig
+from evaluation.configs import AppConfig, PrivacyConfig, TaskConfig
 from evaluation.parallel import parallel_worker
 
 
@@ -155,11 +155,13 @@ if __name__ == '__main__':
     agent_config = yaml_data["agent"]
     task_config = yaml_data["task"]
     eval_config = yaml_data["eval"]
+    privacy_config = PrivacyConfig.from_raw(yaml_data.get("privacy"))
 
     autotask_class = task_config["class"] if "class" in task_config else "ScreenshotMobileTask_AutoTest"
 
     single_config = TaskConfig(**task_config["args"])
     single_config = single_config.add_config(eval_config)
+    single_config.privacy = privacy_config
     if "True" == agent_config.get("relative_bbox"):
         single_config.is_relative_bbox = True
 
@@ -231,6 +233,7 @@ if __name__ == '__main__':
         os.makedirs(task_dir, exist_ok=True)
     except Exception:
         pass
-    calculate_overall_anonymization_stats(task_dir)
+    if single_config.privacy.enabled and single_config.privacy.method != "none":
+        calculate_overall_anonymization_stats(task_dir)
 
 

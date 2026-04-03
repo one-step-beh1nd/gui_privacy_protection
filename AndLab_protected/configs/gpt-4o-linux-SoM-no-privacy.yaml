@@ -23,8 +23,6 @@ eval:
     port: 6060
 
 privacy:
-  enabled: true
-  method: token_anonymization
+  enabled: false
+  method: none
   args: {}
-
-
