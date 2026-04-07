@@ -246,6 +246,8 @@ class JSONRecorder:
             return "[XML fetch failed: Unable to retrieve UI hierarchy. Element-based operations (tap, long_press, swipe) are not available. Please use coordinate-based operations or wait and retry.]"
         
         xml_compressed = get_compressed_xml(xml_path, version=self.xml_compressed_version)
+        if xml_compressed is None:
+            return "[XML compress failed: Unable to parse UI hierarchy into compressed text. Element-based operations may be unavailable. Please use screenshot cues or retry.]"
         
         privacy_layer = get_privacy_layer()
         if xml_compressed:
@@ -258,8 +260,11 @@ class JSONRecorder:
             except Exception as e:
                 print(f"Warning: Failed to apply privacy processing to compressed XML: {e}")
         
-        with open(os.path.join(self.xml_file_path, f"{self.turn_number}_compressed_xml.txt"), 'w',
-                  encoding='utf-8') as f:
+        with open(
+            os.path.join(self.xml_file_path, f"{self.turn_number}_compressed_xml.txt"),
+            'w',
+            encoding='utf-8',
+        ) as f:
             f.write(xml_compressed)
         self.page_executor.latest_xml = xml_compressed
         return xml_compressed

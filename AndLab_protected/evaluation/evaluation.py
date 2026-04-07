@@ -59,6 +59,7 @@ class AutoTask():
             rsp = self.agent.act(messages_to_send)
         except Exception as e:
             print_with_color(f"Error: {e}", "red")
+            raise
 
         exe_res = self.page_executor(get_code_snippet(rsp))
         self.record.update_after(exe_res, rsp)
@@ -93,7 +94,7 @@ class ScreenshotTask(TextOnlyTask):
         except Exception as e:
             import traceback
             print(traceback.print_exc())
-            # print_with_color(f"Error: {e}", "red")
+            raise
 
         exe_res = self.page_executor(get_code_snippet(rsp))
         self.record.update_after(exe_res, rsp)
@@ -124,7 +125,7 @@ class CogAgentTask(TextOnlyTask):
         except Exception as e:
             import traceback
             print(traceback.print_exc())
-            # print_with_color(f"Error: {e}", "red")
+            raise
 
         exe_res = self.page_executor(get_code_snippet(rsp))
         self.record.update_after(exe_res, rsp)
@@ -209,8 +210,7 @@ class ScreenSeeActTask(TextOnlyTask):
         except Exception as e:
             import traceback
             print(traceback.print_exc())
-            # print_with_color(f"Error: {e}", "red")
-            # exit(1)
+            raise
         referring = referring.split("Final Answer:")[-1].strip()
         exe_res = self.page_executor(get_code_snippet(referring))
         self.stage_one_record.append(description)
@@ -282,8 +282,7 @@ class TextOnlySeeActTask(TextOnlyTask):
         except Exception as e:
             import traceback
             print(traceback.print_exc())
-            # print_with_color(f"Error: {e}", "red")
-            # exit(1)
+            raise
         referring = referring.split("Final Answer:")[-1].strip()
         exe_res = self.page_executor(get_code_snippet(referring))
         self.stage_one_record.append(description)
@@ -324,6 +323,7 @@ class TextOnlyFineTuneTask(TextOnlyTask):
             rsp = self.agent.act(messages_to_send)
         except Exception as e:
             print_with_color(f"Error: {e}", "red")
+            raise
 
         exe_res = self.page_executor(get_code_snippet(rsp))
         self.record.update_after(exe_res, rsp)

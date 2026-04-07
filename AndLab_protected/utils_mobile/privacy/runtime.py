@@ -220,6 +220,9 @@ class NoPrivacyProtectionLayer(BasePrivacyProtectionLayer):
     def __init__(self, enabled: bool = False, config: Optional[PrivacyConfig] = None):
         super().__init__(enabled=False, config=config or PrivacyConfig(enabled=False, method="none"))
 
+    def should_save_prompts(self) -> bool:
+        return True
+
     def transform_prompt_text(self, prompt_text: str) -> str:
         return _strip_privacy_prompt_content(prompt_text)
 

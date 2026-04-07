@@ -189,6 +189,11 @@ def _default_output_path(image_path: str) -> str:
     return f"{root}_dualtap{ext or '.png'}"
 
 
+def _temp_output_path(target_path: str) -> str:
+    root, ext = os.path.splitext(target_path)
+    return f"{root}.dualtap_tmp{ext or '.png'}"
+
+
 def perturb_screenshot_with_dualtap(
     image_path: str,
     config: Any = None,
@@ -224,7 +229,7 @@ def perturb_screenshot_with_dualtap(
         adversarial_image = adversarial_image.resize(original_size, Image.LANCZOS)
 
     target_path = output_path or _default_output_path(image_path)
-    temp_path = f"{target_path}.tmp"
+    temp_path = _temp_output_path(target_path)
     adversarial_image.save(temp_path)
     os.replace(temp_path, target_path)
     return target_path
