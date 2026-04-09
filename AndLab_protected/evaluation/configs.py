@@ -126,6 +126,7 @@ class PrivacyConfig:
 class TaskConfig:
     save_dir: str
     max_rounds: int
+    abort_max_attempts: int = 3
     mode: Optional[float] = None
     request_interval: Optional[float] = None
     task_id: Optional[str] = None

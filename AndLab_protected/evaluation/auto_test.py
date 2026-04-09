@@ -1,4 +1,6 @@
 import datetime
+import os
+import shutil
 import time
 from agent import get_agent
 from evaluation.configs import TaskConfig
@@ -243,6 +245,22 @@ class AutoTest():
             self.controller.launch_app(find_package(self.app))
             time.sleep(15)
 
+    def _remove_task_dir_for_retry(self, task_folder_name):
+        save_dir = os.path.abspath(self.config.save_dir)
+        task_dir = os.path.abspath(os.path.join(self.config.save_dir, task_folder_name))
+        if not os.path.isdir(task_dir):
+            return
+        try:
+            if os.path.commonpath([save_dir, task_dir]) != save_dir:
+                print_with_color(
+                    f"[Abort retry] Refusing to remove path outside save_dir: {task_dir}", "red")
+                return
+        except ValueError:
+            print_with_color(
+                f"[Abort retry] Refusing to remove path (not under save_dir): {task_dir}", "red")
+            return
+        shutil.rmtree(task_dir)
+
     def run_serial(self, tasks):
         if self.config.docker:
             instance = Docker_Instance(self.config)
@@ -254,6 +272,25 @@ class AutoTest():
         return outcomes
 
     def run_task(self, task_dict, instance):
+        task_id = task_dict["task_id"]
+        max_attempts = max(1, int(self.config.abort_max_attempts))
+        last_result = None
+        for attempt in range(max_attempts):
+            last_result = self._run_task_once(task_dict, instance)
+            if last_result["status"] != "abort":
+                return last_result
+            if attempt < max_attempts - 1:
+                print_with_color(
+                    f"[Abort retry] {task_id} aborted (attempt {attempt + 1}/{max_attempts}); "
+                    f"removing {last_result['task_folder']} and retrying...",
+                    "yellow",
+                )
+                self._remove_task_dir_for_retry(last_result["task_folder"])
+            else:
+                return last_result
+        return last_result
+
+    def _run_task_once(self, task_dict, instance):
         task_id = task_dict['task_id']
         demo_timestamp = int(time.time())
         self.config.task_name = task_id + "_" + datetime.datetime.fromtimestamp(demo_timestamp).strftime(
