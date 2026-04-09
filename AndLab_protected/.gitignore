@@ -64,3 +64,5 @@ configs/protected-*.yaml
 configs/base-*.yaml
 configs/fullcover-*.yaml
 configs/dualtap-*.yaml
+del*.sh
+output*.txt
