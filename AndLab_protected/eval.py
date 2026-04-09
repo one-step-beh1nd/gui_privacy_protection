@@ -1,9 +1,10 @@
 import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 import argparse
-import yaml
-import json
 import glob
+import json
+import shutil
+import yaml
 
 from evaluation.auto_test import *
 from generate_result import find_all_task_files
@@ -135,6 +136,98 @@ def calculate_overall_anonymization_stats(task_dir: str):
         print(f"[PrivacyProtection] Failed to save summary: {e}")
 
 
+def load_incomplete_tasks(path):
+    """
+    Load incomplete_tasks.json. Returns (items, ok) where ok is True only if
+    the file existed and had a valid {"incomplete": list} shape.
+    """
+    if not os.path.isfile(path):
+        return [], False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        items = data.get("incomplete") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            print("[eval] incomplete_tasks.json: invalid format (missing incomplete list), ignoring")
+            return [], False
+        return items, True
+    except Exception as exc:
+        print(f"[eval] incomplete_tasks.json: failed to load ({exc}), ignoring")
+        return [], False
+
+
+def safe_rmtree_under(parent_dir, name):
+    """Remove join(parent_dir, name) only if it is a directory under abspath(parent_dir)."""
+    parent_dir = os.path.abspath(parent_dir)
+    target = os.path.abspath(os.path.join(parent_dir, name))
+    if not os.path.isdir(target):
+        return
+    try:
+        if os.path.commonpath([parent_dir, target]) != parent_dir:
+            print(f"[eval] Refusing to remove outside run_dir: {target}")
+            return
+    except ValueError:
+        print(f"[eval] Refusing to remove path not under run_dir: {target}")
+        return
+    shutil.rmtree(target)
+
+
+def remove_abort_task_folders(run_dir, task_id, recorded_folder):
+    """Delete recorded task folder and any other run_dir/<task_id>_*/ directories."""
+    if recorded_folder:
+        safe_rmtree_under(run_dir, recorded_folder)
+    if not task_id or not os.path.isdir(run_dir):
+        return
+    prefix = task_id + "_"
+    for name in list(os.listdir(run_dir)):
+        path = os.path.join(run_dir, name)
+        if os.path.isdir(path) and name.startswith(prefix):
+            safe_rmtree_under(run_dir, name)
+
+
+def task_ids_from_run_dir(run_dir):
+    """Task ids inferred from immediate subdirectories (name like app_num_...)."""
+    if not os.path.isdir(run_dir):
+        return set()
+    found = set()
+    for name in os.listdir(run_dir):
+        path = os.path.join(run_dir, name)
+        if not os.path.isdir(path):
+            continue
+        parts = name.split("_")
+        if len(parts) < 2:
+            continue
+        found.add(parts[0] + "_" + parts[1])
+    return found
+
+
+def merge_incomplete_records(prev_incomplete, outcomes):
+    """
+    Keep prior entries for tasks not in this run's outcomes; append max_step/abort
+    from outcomes for tasks that ran.
+    """
+    ran_ids = {o["task_id"] for o in outcomes}
+    merged = [dict(x) for x in prev_incomplete if x.get("task_id") not in ran_ids]
+    for o in outcomes:
+        st = o.get("status")
+        if st == "max_step":
+            merged.append({
+                "task_id": o["task_id"],
+                "task_folder": o["task_folder"],
+                "status": "max_step",
+            })
+        elif st == "abort":
+            entry = {
+                "task_id": o["task_id"],
+                "task_folder": o["task_folder"],
+                "status": "abort",
+            }
+            if o.get("last_agent_raw_output") is not None:
+                entry["last_agent_raw_output"] = o["last_agent_raw_output"]
+            merged.append(entry)
+    return merged
+
+
 if __name__ == '__main__':
     task_yamls = os.listdir('evaluation/config')
     task_yamls = ["evaluation/config/" + i for i in task_yamls if i.endswith(".yaml")]
@@ -166,11 +259,19 @@ if __name__ == '__main__':
         single_config.is_relative_bbox = True
 
     task_files = find_all_task_files(args.task_config)
-    if os.path.exists(os.path.join(single_config.save_dir, args.name)):
-        already_run = os.listdir(os.path.join(single_config.save_dir, args.name))
-        already_run = [i.split("_")[0] + "_" + i.split("_")[1] for i in already_run]
-    else:
-        already_run = []
+    run_dir = os.path.join(single_config.save_dir, args.name)
+    incomplete_path = os.path.join(run_dir, "incomplete_tasks.json")
+    prev_incomplete, incomplete_ok = load_incomplete_tasks(incomplete_path)
+    abort_task_ids = {e["task_id"] for e in prev_incomplete if e.get("status") == "abort"}
+
+    if incomplete_ok:
+        for entry in prev_incomplete:
+            if entry.get("status") != "abort":
+                continue
+            tid = entry.get("task_id")
+            remove_abort_task_folders(run_dir, tid, entry.get("task_folder"))
+
+    already_run = task_ids_from_run_dir(run_dir)
 
     all_task_start_info = []
     for app_task_config_path in task_files:
@@ -187,7 +288,7 @@ if __name__ == '__main__':
                 else:
                     task_ids.append(task_id_arg)
         for task_id in task_ids:
-            if task_id in already_run:
+            if task_id in already_run and task_id not in abort_task_ids:
                 print(f"Task {task_id} already run, skipping")
                 continue
             if task_id not in app_config.task_name:
@@ -235,7 +336,7 @@ if __name__ == '__main__':
     except Exception:
         pass
 
-    incomplete = [o for o in outcomes if o.get("status") in ("max_step", "abort")]
+    incomplete = merge_incomplete_records(prev_incomplete, outcomes)
     try:
         with open(os.path.join(task_dir, "incomplete_tasks.json"), "w", encoding="utf-8") as f:
             json.dump({"incomplete": incomplete}, f, ensure_ascii=False, indent=2)
