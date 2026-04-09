@@ -221,10 +221,11 @@ if __name__ == '__main__':
         raise ValueError("--parallel must be at least 1")
 
     if args.parallel == 1:
-        Auto_Test.run_serial(all_task_start_info)
+        outcomes = Auto_Test.run_serial(all_task_start_info)
     else:
-        parallel_worker(class_, single_config.subdir_config(args.name), args.parallel, all_task_start_info.copy())
-    
+        outcomes = parallel_worker(class_, single_config.subdir_config(args.name), args.parallel,
+                                   all_task_start_info.copy())
+
     # Calculate and save overall anonymization statistics
     task_dir = os.path.abspath(single_config.subdir_config(args.name).save_dir)
     # Ensure the run-level directory exists even if no tasks were executed (e.g., filtered/skipped),
@@ -233,6 +234,14 @@ if __name__ == '__main__':
         os.makedirs(task_dir, exist_ok=True)
     except Exception:
         pass
+
+    incomplete = [o for o in outcomes if o.get("status") in ("max_step", "abort")]
+    try:
+        with open(os.path.join(task_dir, "incomplete_tasks.json"), "w", encoding="utf-8") as f:
+            json.dump({"incomplete": incomplete}, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print(f"Failed to write incomplete_tasks.json: {exc}")
+
     if single_config.privacy.enabled and single_config.privacy.method != "none":
         calculate_overall_anonymization_stats(task_dir)
 

@@ -21,6 +21,7 @@ class GLM4Agent(OpenAIAgent):
         self.top_p = top_p
         self.kwargs = kwargs
         self.name = "GLM4Agent"
+        self.last_llm_raw_response = None
 
     @backoff.on_exception(
         backoff.expo, Exception,
@@ -33,6 +34,7 @@ class GLM4Agent(OpenAIAgent):
             model=self.model_name,  # 填写需要调用的模型名称
             messages=messages,
         )
+        capture_llm_raw_response(self, response)
         return response.choices[0].message.content
 
 

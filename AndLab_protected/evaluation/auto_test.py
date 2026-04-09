@@ -248,8 +248,10 @@ class AutoTest():
             instance = Docker_Instance(self.config)
         else:
             instance = Instance(self.config)
+        outcomes = []
         for task in tasks:
-            self.run_task(task, instance)
+            outcomes.append(self.run_task(task, instance))
+        return outcomes
 
     def run_task(self, task_dict, instance):
         task_id = task_dict['task_id']
@@ -297,6 +299,7 @@ class AutoTest():
             config=self.config,
         )
         task_agent = self.get_agent()
+        aborted = False
         while round_count < self.config.max_rounds:
             try:
                 round_count += 1
@@ -314,6 +317,12 @@ class AutoTest():
                 import traceback
                 print(traceback.print_exc())
                 print_with_color(f"Error: {e}", "red")
+                record = getattr(self, "record", None)
+                if record is not None and len(record.contents) > 0:
+                    last = record.contents[-1]
+                    if "parsed_action" not in last:
+                        record.flush_incomplete_step_to_trace(error_message=str(e))
+                aborted = True
                 break
 
         privacy_layer = get_privacy_layer()
@@ -326,12 +335,29 @@ class AutoTest():
         instance.stop_single_task()
         if task_complete:
             print_with_color(f"Completed successfully. {round_count} rounds generated.", "green")
-        elif round_count == self.config.max_rounds:
+            status = "success"
+        elif aborted:
+            print_with_color(f"Finished unexpectedly. {round_count} rounds generated.", "red")
+            status = "abort"
+        elif round_count >= self.config.max_rounds:
             print_with_color(
                 f"Finished due to reaching max rounds. {round_count} rounds generated.",
                 "yellow")
+            status = "max_step"
         else:
             print_with_color(f"Finished unexpectedly. {round_count} rounds generated.", "red")
+            status = "abort"
+
+        result = {
+            "task_id": task_id,
+            "task_folder": self.config.task_name,
+            "status": status,
+        }
+        if status == "abort":
+            result["last_agent_raw_output"] = getattr(
+                self.record, "last_llm_raw_response", None
+            )
+        return result
 
     def get_agent(self):
         return NotImplementedError

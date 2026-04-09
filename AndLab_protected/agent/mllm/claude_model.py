@@ -19,6 +19,7 @@ class Claude_official(OpenAIAgent):
         self.max_tokens = max_new_tokens
         self.name = "ClaudeAgent"
         self.sleep = 3
+        self.last_llm_raw_response = None
 
     @backoff.on_exception(
         backoff.expo, Exception,
@@ -54,6 +55,7 @@ class Claude_official(OpenAIAgent):
         except Exception as e:
             return False, str(e)
 
+        capture_llm_raw_response(self, res)
         return res.content[0].text
 
     def format_message(self, messages: List[Dict[str, Any]]):

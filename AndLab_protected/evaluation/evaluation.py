@@ -45,6 +45,9 @@ class AutoTask():
         compressed_xml_json = self.record.get_latest_xml()
 
         prompt = f"" if round_count == 0 else "** XML **\n"
+        rsp = None
+        exe_res = None
+        messages_to_send = None
         try:
             # Handle case where compressed_xml_json is None (when XML fetch failed)
             # Note: get_latest_xml() now returns an error message string instead of None
@@ -57,12 +60,15 @@ class AutoTask():
             # Save prompt before sending to cloud agent
             self.record.save_prompt_to_cloud_agent(messages_to_send, turn_number=self.record.turn_number)
             rsp = self.agent.act(messages_to_send)
+            self.record.last_llm_raw_response = getattr(self.agent, "last_llm_raw_response", None)
+            exe_res = self.page_executor(get_code_snippet(rsp))
+            self.record.update_after(exe_res, rsp)
         except Exception as e:
             print_with_color(f"Error: {e}", "red")
+            self.record.save_prompt_on_abort(messages_to_send, rsp, self.record.turn_number)
+            self.record.flush_incomplete_step_to_trace(rsp=rsp, exe_res=exe_res, error_message=str(e))
             raise
 
-        exe_res = self.page_executor(get_code_snippet(rsp))
-        self.record.update_after(exe_res, rsp)
         self.record.turn_number += 1
 
 
@@ -81,6 +87,9 @@ class ScreenshotTask(TextOnlyTask):
         self.record.update_before(controller=self.controller, need_screenshot=True, ac_status=self.accessibility,
                                   need_labeled=True)
         prompt = f"" if round_count == 0 else "** XML **\n"
+        rsp = None
+        exe_res = None
+        messages_to_send = None
         try:
             xml = self.record.get_latest_xml()
             image_path = self.record.labeled_current_screenshot_path
@@ -89,15 +98,16 @@ class ScreenshotTask(TextOnlyTask):
             # Save prompt before sending to cloud agent
             self.record.save_prompt_to_cloud_agent(messages_to_send, turn_number=self.record.turn_number)
             rsp = self.agent.act(messages_to_send)
-            
-            #rsp = input("Please input the response: ")
+            self.record.last_llm_raw_response = getattr(self.agent, "last_llm_raw_response", None)
+            exe_res = self.page_executor(get_code_snippet(rsp))
+            self.record.update_after(exe_res, rsp)
         except Exception as e:
             import traceback
             print(traceback.print_exc())
+            self.record.save_prompt_on_abort(messages_to_send, rsp, self.record.turn_number)
+            self.record.flush_incomplete_step_to_trace(rsp=rsp, exe_res=exe_res, error_message=str(e))
             raise
 
-        exe_res = self.page_executor(get_code_snippet(rsp))
-        self.record.update_after(exe_res, rsp)
         self.record.turn_number += 1
 
     def set_system_prompt(self, instruction):
@@ -115,6 +125,9 @@ class CogAgentTask(TextOnlyTask):
                                   need_labeled=True)
         prompt = f"" if round_count == 0 else json.dumps({"current_app": self.controller.get_current_app()},
                                                          ensure_ascii=False)
+        rsp = None
+        exe_res = None
+        messages_to_send = None
         try:
             image_path = self.page_executor.current_screenshot
             current_message = self.agent.prompt_to_message(prompt, [image_path])
@@ -122,13 +135,16 @@ class CogAgentTask(TextOnlyTask):
             # Save prompt before sending to cloud agent
             self.record.save_prompt_to_cloud_agent(messages_to_send, turn_number=self.record.turn_number)
             rsp = self.agent.act(messages_to_send)
+            self.record.last_llm_raw_response = getattr(self.agent, "last_llm_raw_response", None)
+            exe_res = self.page_executor(get_code_snippet(rsp))
+            self.record.update_after(exe_res, rsp)
         except Exception as e:
             import traceback
             print(traceback.print_exc())
+            self.record.save_prompt_on_abort(messages_to_send, rsp, self.record.turn_number)
+            self.record.flush_incomplete_step_to_trace(rsp=rsp, exe_res=exe_res, error_message=str(e))
             raise
 
-        exe_res = self.page_executor(get_code_snippet(rsp))
-        self.record.update_after(exe_res, rsp)
         self.record.turn_number += 1
 
     def set_system_prompt(self, instruction):
@@ -163,6 +179,11 @@ class ScreenSeeActTask(TextOnlyTask):
     def run_step(self, round_count):
         self.record.update_before(controller=self.controller, need_screenshot=True, ac_status=self.accessibility,
                                   need_labeled=False)
+        description = None
+        referring = None
+        rsp = None
+        exe_res = None
+        messages = None
         try:
             xml_tree = self.record.get_latest_xml_tree()
             choices_list = extract_bounds(xml_tree)
@@ -189,6 +210,7 @@ class ScreenSeeActTask(TextOnlyTask):
             # Save prompt before sending to cloud agent
             self.record.save_prompt_to_cloud_agent(messages, turn_number=self.record.turn_number, stage="query")
             description = self.agent.act(messages)
+            self.record.last_llm_raw_response = getattr(self.agent, "last_llm_raw_response", None)
             print(description, end="\n\n")
             with open("monitor.log", "w") as f:
                 f.write(description)
@@ -202,19 +224,31 @@ class ScreenSeeActTask(TextOnlyTask):
             # Save prompt before sending to cloud agent
             self.record.save_prompt_to_cloud_agent(messages, turn_number=self.record.turn_number, stage="referring")
             referring = self.agent.act(messages)
+            self.record.last_llm_raw_response = getattr(self.agent, "last_llm_raw_response", None)
             print(referring, end="\n\n")
             with open("monitor.log", "w") as f:
                 f.write(referring)
 
-
+            referring_clean = referring.split("Final Answer:")[-1].strip()
+            exe_res = self.page_executor(get_code_snippet(referring_clean))
+            rsp = description + "\n\n==========\n\n" + referring
+            self.record.update_after(exe_res, rsp)
+            self.stage_one_record.append(description)
         except Exception as e:
             import traceback
             print(traceback.print_exc())
+            partial = None
+            if description is not None or referring is not None:
+                parts = []
+                if description is not None:
+                    parts.append(description)
+                if referring is not None:
+                    parts.append(referring)
+                partial = "\n\n==========\n\n".join(parts)
+            self.record.save_prompt_seeact_abort(messages, description, referring, self.record.turn_number)
+            self.record.flush_incomplete_step_to_trace(rsp=partial, exe_res=exe_res, error_message=str(e))
             raise
-        referring = referring.split("Final Answer:")[-1].strip()
-        exe_res = self.page_executor(get_code_snippet(referring))
-        self.stage_one_record.append(description)
-        self.record.update_after(exe_res, description + "\n\n==========\n\n" + referring)
+
         self.record.turn_number += 1
 
 
@@ -228,10 +262,14 @@ class TextOnlySeeActTask(TextOnlyTask):
         self.stage_one_record = []
         self.instruction = instruction
 
-    def run_step(self):
+    def run_step(self, round_count):
         self.record.update_before(controller=self.controller, need_screenshot=True, ac_status=self.accessibility,
                                   need_labeled=False)
-        round_count = self.record.get_round_count()
+        description = None
+        referring = None
+        rsp = None
+        exe_res = None
+        messages = None
         try:
             xml_tree = self.record.get_latest_xml_tree()
             xml_text = self.record.get_latest_xml()
@@ -261,6 +299,7 @@ class TextOnlySeeActTask(TextOnlyTask):
             # Save prompt before sending to cloud agent
             self.record.save_prompt_to_cloud_agent(messages, turn_number=self.record.turn_number, stage="query")
             description = self.agent.act(messages)
+            self.record.last_llm_raw_response = getattr(self.agent, "last_llm_raw_response", None)
             print(description, end="\n\n")
             with open("monitor.log", "w") as f:
                 f.write(description)
@@ -274,19 +313,31 @@ class TextOnlySeeActTask(TextOnlyTask):
             # Save prompt before sending to cloud agent
             self.record.save_prompt_to_cloud_agent(messages, turn_number=self.record.turn_number, stage="referring")
             referring = self.agent.act(messages)
+            self.record.last_llm_raw_response = getattr(self.agent, "last_llm_raw_response", None)
             print(referring, end="\n\n")
             with open("monitor.log", "w") as f:
                 f.write(referring)
 
-
+            referring_clean = referring.split("Final Answer:")[-1].strip()
+            exe_res = self.page_executor(get_code_snippet(referring_clean))
+            rsp = description + "\n\n==========\n\n" + referring
+            self.record.update_after(exe_res, rsp)
+            self.stage_one_record.append(description)
         except Exception as e:
             import traceback
             print(traceback.print_exc())
+            partial = None
+            if description is not None or referring is not None:
+                parts = []
+                if description is not None:
+                    parts.append(description)
+                if referring is not None:
+                    parts.append(referring)
+                partial = "\n\n==========\n\n".join(parts)
+            self.record.save_prompt_seeact_abort(messages, description, referring, self.record.turn_number)
+            self.record.flush_incomplete_step_to_trace(rsp=partial, exe_res=exe_res, error_message=str(e))
             raise
-        referring = referring.split("Final Answer:")[-1].strip()
-        exe_res = self.page_executor(get_code_snippet(referring))
-        self.stage_one_record.append(description)
-        self.record.update_after(exe_res, description + "\n\n==========\n\n" + referring)
+
         self.record.turn_number += 1
 
 
@@ -314,6 +365,9 @@ class TextOnlyFineTuneTask(TextOnlyTask):
         compressed_xml_json = self.record.get_latest_xml()
 
         # prompt = f"" if round_count == 0 else "** XML **\n"
+        rsp = None
+        exe_res = None
+        messages_to_send = None
         try:
             app_info = f"{json.dumps({'current_app': self.controller.get_current_app()}, ensure_ascii=False)}\n"
             current_message = {"role": "user", "content": app_info + compressed_xml_json}
@@ -321,12 +375,15 @@ class TextOnlyFineTuneTask(TextOnlyTask):
             # Save prompt before sending to cloud agent
             self.record.save_prompt_to_cloud_agent(messages_to_send, turn_number=self.record.turn_number)
             rsp = self.agent.act(messages_to_send)
+            self.record.last_llm_raw_response = getattr(self.agent, "last_llm_raw_response", None)
+            exe_res = self.page_executor(get_code_snippet(rsp))
+            self.record.update_after(exe_res, rsp)
         except Exception as e:
             print_with_color(f"Error: {e}", "red")
+            self.record.save_prompt_on_abort(messages_to_send, rsp, self.record.turn_number)
+            self.record.flush_incomplete_step_to_trace(rsp=rsp, exe_res=exe_res, error_message=str(e))
             raise
 
-        exe_res = self.page_executor(get_code_snippet(rsp))
-        self.record.update_after(exe_res, rsp)
         self.record.turn_number += 1
 
 

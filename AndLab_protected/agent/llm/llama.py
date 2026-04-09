@@ -1,3 +1,7 @@
+import json
+
+import requests
+
 from agent.model import *
 
 class LLaMAModelAgent(OpenAIAgent):
@@ -26,6 +30,7 @@ class LLaMAModelAgent(OpenAIAgent):
         }
 
         response = requests.post(self.api_base, headers=headers, json=data)
+        capture_llm_raw_response(self, response)
         return response.json()["choices"][0]["message"]["content"]
 
     

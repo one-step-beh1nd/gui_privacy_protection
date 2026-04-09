@@ -66,6 +66,9 @@ class JSONRecorder:
         elif config.version == "v2":
             self.xml_compressed_version = "v2"
 
+        # Last successful LLM API raw response (JSON string), synced from agent after act(); cleared each step.
+        self.last_llm_raw_response = None
+
     def update_response_deprecated(self, controller, response=None, prompt="** screenshot **", need_screenshot=False,
                                    ac_status=False):
         if need_screenshot:
@@ -117,8 +120,9 @@ class JSONRecorder:
         return step
 
     def update_before(self, controller, prompt="** XML **", need_screenshot=False, ac_status=False, need_labeled=False):
+        self.last_llm_raw_response = None
         privacy_layer = get_privacy_layer()
-        
+
         if need_screenshot:
             self.page_executor.update_screenshot(prefix=str(self.turn_number), suffix="before")
             try:
@@ -292,20 +296,56 @@ class JSONRecorder:
         with jsonlines.open(self.trace_file_path, 'a') as f:
             f.write(self.contents[-1])
 
+    def _augment_rsp_for_call_api(self, exe_res, rsp):
+        if exe_res is not None and exe_res.get("action") == "Call_API":
+            call_instruction = exe_res["kwargs"]["instruction"]
+            call_response = exe_res["kwargs"]["response"]
+            if isinstance(call_response, (dict, list)):
+                call_response_str = json.dumps(call_response, ensure_ascii=False)
+            else:
+                call_response_str = str(call_response)
+            return rsp + f"\n\nQuery:{call_instruction}\nResponse:{call_response_str}"
+        return rsp
+
+    def flush_incomplete_step_to_trace(self, rsp=None, exe_res=None, error_message=None):
+        """
+        Append the current in-memory step to trace.jsonl when update_after was skipped due to an error.
+        Does not run dectect_auto_stop. Idempotent if parsed_action is already set.
+        """
+        if len(self.contents) == 0:
+            return
+        last = self.contents[-1]
+        if "parsed_action" in last:
+            return
+        if exe_res is None:
+            last["parsed_action"] = {
+                "operation": "error",
+                "action": "ExecutionAborted",
+                "kwargs": {"error": error_message or "unknown"},
+            }
+        else:
+            last["parsed_action"] = exe_res
+        if error_message:
+            last["trace_error"] = error_message
+        if rsp is not None:
+            self.history.append({"role": "user", "content": "** XML **"})
+            rsp_out = self._augment_rsp_for_call_api(last["parsed_action"], rsp)
+            self.history.append({"role": "assistant", "content": rsp_out})
+            last["current_response"] = rsp_out
+        else:
+            msg = "[no model response]"
+            if error_message:
+                msg = f"{msg} {error_message}"
+            last["current_response"] = msg.strip()
+        with jsonlines.open(self.trace_file_path, 'a') as f:
+            f.write(last)
+
     def update_after(self, exe_res, rsp):
         if len(self.contents) == 0:
             return
         self.contents[-1]['parsed_action'] = exe_res
         self.history.append({"role": "user", "content": "** XML **"})
-        if exe_res["action"] == "Call_API":
-            call_instruction = exe_res["kwargs"]["instruction"]
-            call_response = exe_res["kwargs"]["response"]
-            # 如果 response 是结构化对象，则序列化为 JSON 方便云端 agent 在下一轮阅读
-            if isinstance(call_response, (dict, list)):
-                call_response_str = json.dumps(call_response, ensure_ascii=False)
-            else:
-                call_response_str = str(call_response)
-            rsp = rsp + f"\n\nQuery:{call_instruction}\nResponse:{call_response_str}"
+        rsp = self._augment_rsp_for_call_api(exe_res, rsp)
         self.history.append({"role": "assistant", "content": rsp})
         self.contents[-1]["current_response"] = rsp
         with jsonlines.open(self.trace_file_path, 'a') as f:
@@ -340,3 +380,36 @@ class JSONRecorder:
                 json.dump(messages, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"Warning: Failed to save prompt to {filepath}: {e}")
+
+    def save_prompt_on_abort(self, messages_to_send, assistant_rsp=None, turn_number=None, stage=None):
+        """
+        Save prompt JSON for a round that aborted. Same schema as save_prompt_to_cloud_agent (list of message dicts).
+        If assistant_rsp is set, appends {"role": "assistant", "content": assistant_rsp} so the last model output is kept.
+        """
+        if messages_to_send is None:
+            return
+        out = list(messages_to_send)
+        if assistant_rsp is not None:
+            out.append({"role": "assistant", "content": assistant_rsp})
+        self.save_prompt_to_cloud_agent(out, turn_number=turn_number, stage=stage)
+
+    def save_prompt_seeact_abort(self, messages, description, referring, turn_number):
+        """
+        SeeAct two-stage: update prompt_turn_*_query.json and/or prompt_turn_*_referring.json on abort.
+        """
+        if not messages:
+            return
+        if description is not None and len(messages) >= 3:
+            self.save_prompt_to_cloud_agent(
+                messages[:3], turn_number=turn_number, stage="query"
+            )
+        if referring is not None:
+            self.save_prompt_to_cloud_agent(
+                list(messages) + [{"role": "assistant", "content": referring}],
+                turn_number=turn_number,
+                stage="referring",
+            )
+        elif description is not None and len(messages) >= 4:
+            self.save_prompt_to_cloud_agent(
+                messages, turn_number=turn_number, stage="referring"
+            )

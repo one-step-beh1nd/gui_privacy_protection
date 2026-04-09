@@ -36,5 +36,7 @@ def parallel_worker(class_, config, parallel, tasks):
             future.add_done_callback(lambda fut, di=instance: task_done_callback(fut, di, free_dockers))
             futures.append(future)
 
+        outcomes = []
         for future in concurrent.futures.as_completed(futures):
-            future.result()
+            outcomes.append(future.result())
+        return outcomes

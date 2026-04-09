@@ -1,3 +1,4 @@
+import json
 from http import HTTPStatus
 
 import dashscope
@@ -20,6 +21,7 @@ class QwenAgent(OpenAIAgent):
         self.seed = seed
         self.top_k = top_k
         self.sleep = sleep
+        self.last_llm_raw_response = None
 
     @backoff.on_exception(
         backoff.expo, Exception,
@@ -35,6 +37,26 @@ class QwenAgent(OpenAIAgent):
 
         if response.status_code == HTTPStatus.OK:
             print(f"Prompt Tokens: {response.usage.input_tokens}\nCompletion Tokens: {response.usage.output_tokens}\n")
+            try:
+                u = response.usage
+                usage = {
+                    "input_tokens": u.input_tokens,
+                    "output_tokens": u.output_tokens,
+                }
+            except Exception:
+                usage = None
+            self.last_llm_raw_response = json.dumps(
+                {
+                    "status_code": response.status_code,
+                    "code": getattr(response, "code", None),
+                    "message": getattr(response, "message", None),
+                    "request_id": getattr(response, "request_id", None),
+                    "usage": usage,
+                    "output": getattr(response, "output", None),
+                },
+                ensure_ascii=False,
+                default=str,
+            )
             return response.output.choices[0].message.content[0]['text']
         else:
             print(response.code, response.message)

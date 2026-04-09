@@ -60,7 +60,7 @@ debug.md
 eval*.sh
 generator*.pth
 run*.sh
-configs/1*.yaml
-configs/2*.yaml
-configs/3*.yaml
-configs/4*.yaml
+configs/protected-*.yaml
+configs/base-*.yaml
+configs/fullcover-*.yaml
+configs/dualtap-*.yaml
