@@ -24,7 +24,7 @@ mkdir docker_file
 cd docker_file
 unzip /path/to/your/docker-file.zip
 cd docker-file
-docker build -t android_eval:latest .
+docker build -t python-android-env-test:latest .
 ```
 
 Note that we use
@@ -59,7 +59,7 @@ eval:
   avd_log_dir: ./logs/evaluation
   docker: True
   docker_args:
-    image_name: android_eval:latest
+    image_name: python-android-env-test:latest
     port: 6060
 ```
 
