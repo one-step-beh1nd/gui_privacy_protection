@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import os
-import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from PIL import Image
 
+from .dualtap_runtime import Config as DualTapConfig
+from .dualtap_runtime import generate_adversarial_image, load_generator
+
 
 _CHECKPOINT_ENV_KEY = "DUALTAP_CHECKPOINT"
 _IMAGE_SIZE_ENV_KEY = "DUALTAP_IMAGE_SIZE"
-_CODE_ROOT_ENV_KEY = "DUALTAP_CODE_ROOT"
 _DEVICE_ENV_KEY = "DUALTAP_DEVICE"
 _SHARE_MODEL_ENV_KEY = "DUALTAP_SHARE_MODEL"
 
@@ -43,47 +44,15 @@ def _resolve_path(path_value: str) -> str:
     return str((_project_root() / path).resolve())
 
 
-def _candidate_dualtap_roots() -> Tuple[Path, ...]:
-    workspace_root = _workspace_root()
-    candidates = []
-
-    env_root = os.environ.get(_CODE_ROOT_ENV_KEY)
-    if env_root:
-        candidates.append(Path(env_root))
-
-    candidates.extend(
-        [
-            workspace_root / "DualTAP",
-            workspace_root / "DualTAP_with_code",
-            _project_root() / "DualTAP",
-            _project_root() / "DualTAP_with_code",
-        ]
-    )
-    return tuple(candidates)
-
-
-def _ensure_dualtap_importable() -> Path:
-    for candidate in _candidate_dualtap_roots():
-        if candidate.exists():
-            candidate_str = str(candidate.resolve())
-            if candidate_str not in sys.path:
-                sys.path.insert(0, candidate_str)
-            return candidate.resolve()
-    raise FileNotFoundError(
-        "DualTAP project not found. Set DUALTAP_CODE_ROOT or place the source "
-        "under DualTAP / DualTAP_with_code in the workspace."
-    )
-
-
 def _auto_discover_checkpoint() -> Optional[str]:
     candidate_dirs = (
         _project_root(),
         _project_root() / "checkpoints_eot",
         _project_root() / "checkpoint_eot",
-        _workspace_root() / "DualTAP",
-        _workspace_root() / "DualTAP" / "checkpoints_eot",
-        _workspace_root() / "DualTAP_with_code",
-        _workspace_root() / "DualTAP_with_code" / "checkpoints_eot",
+        _project_root() / "checkpoints",
+        _project_root() / "models",
+        _project_root() / "models" / "dualtap",
+        _workspace_root() / "checkpoints_eot",
     )
     checkpoints = []
     for directory in candidate_dirs:
@@ -145,11 +114,7 @@ def _apply_device_to_config(config: Any) -> None:
 
 
 def _load_runtime_once(checkpoint_path: str, override_image_size: Optional[int] = None) -> Tuple[Any, Any, Any]:
-    _ensure_dualtap_importable()
-    from config import Config  # type: ignore
-    from inference import load_generator  # type: ignore
-
-    dualtap_config = Config()
+    dualtap_config = DualTapConfig()
     if override_image_size is not None:
         dualtap_config.image_size = override_image_size
     _apply_device_to_config(dualtap_config)
@@ -203,7 +168,7 @@ def perturb_screenshot_with_dualtap(
     if not checkpoint_path:
         raise ValueError(
             "DualTap checkpoint not found. Set privacy.args.dualtap_checkpoint or "
-            f"{_CHECKPOINT_ENV_KEY}, or place a .pth file under the project."
+            f"{_CHECKPOINT_ENV_KEY}, or place a .pth file inside this project."
         )
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"DualTap checkpoint not found: {checkpoint_path}")
@@ -212,8 +177,6 @@ def perturb_screenshot_with_dualtap(
 
     override_image_size = resolve_dualtap_image_size(config)
     dualtap_config, generator, device = _load_runtime(checkpoint_path, override_image_size)
-
-    from inference import generate_adversarial_image  # type: ignore
 
     with Image.open(image_path).convert("RGB") as original_image:
         original_size = original_image.size
