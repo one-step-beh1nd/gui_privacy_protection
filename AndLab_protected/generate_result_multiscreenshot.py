@@ -63,7 +63,6 @@ from evaluation.task import (
     load_task_token_mapping,
 )
 from generate_result import find_all_task_files, find_all_traces_files
-from recalculate_metrics import calculate_average_metrics
 from utils_mobile.privacy_protection import get_privacy_layer
 
 
@@ -518,6 +517,71 @@ def evaluate_all_tasks(tasks: List[Evaluation_Task], max_workers: int):
             import traceback
             print(traceback.format_exc())
             print(f"Generated an exception while evaluating task config: {exc}")
+
+
+def calculate_average_metrics(total_jsonl_file: str, output_file: str):
+    """计算所有应用指标的平均值并保存到 JSON 文件
+    按照论文中的定义计算全局指标（而非应用级别的平均值）：
+    - SR (Acc): 全局的 Complete_Correct / Total
+    - Sub-SR (Partial_Acc): 全局的 Sum_Partial_Acc / Total
+    - RRR: 全局的 Sum_RRR / Complete_Correct（按成功任务数加权）
+    - ROR (reasonable_operation_ratio): 全局的 Sum_reasonable_operation_ratio / Total
+    """
+    # 读取 total.jsonl
+    app_data = []
+    with jsonlines.open(total_jsonl_file) as reader:
+        for line in reader:
+            app_data.append(line)
+
+    if not app_data:
+        print(f"⚠ 警告: {total_jsonl_file} 为空，无法计算平均值")
+        return
+
+    # 计算总和类型的指标（全局统计）
+    num_apps = len(app_data)
+    total = sum(item["Total"] for item in app_data)
+    complete_correct = sum(item["Complete_Correct"] for item in app_data)
+    sum_partial_acc = sum(item["Sum_Partial_Acc"] for item in app_data)
+    sum_rrr = sum(item.get("Sum_RRR", 0) for item in app_data)
+    sum_reasonable_operation_ratio = sum(item.get("Sum_reasonable_operation_ratio", 0) for item in app_data)
+
+    # 按照论文定义计算全局指标（与 output_to_excel 逻辑一致）
+    # SR (Success Rate): 全局的 Complete_Correct / Total
+    acc = complete_correct / total if total > 0 else 0
+
+    # Sub-SR (Sub-Success Rate): 全局的 Sum_Partial_Acc / Total
+    partial_acc = sum_partial_acc / total if total > 0 else 0
+
+    # RRR (Reversed Redundancy Ratio): 全局的 Sum_RRR / Complete_Correct（按成功任务数加权）
+    rrr = sum_rrr / complete_correct if complete_correct > 0 else 0
+
+    # ROR (Reasonable Operation Ratio): 全局的 Sum_reasonable_operation_ratio / Total
+    reasonable_operation_ratio = sum_reasonable_operation_ratio / total if total > 0 else 0
+
+    # 构建结果
+    result = {
+        "num_apps": num_apps,
+        "Acc": acc,
+        "Partial_Acc": partial_acc,
+        "RRR": rrr,
+        "reasonable_operation_ratio": reasonable_operation_ratio,
+        "Total": total,
+        "Complete_Correct": complete_correct,
+        "Sum_Partial_Acc": sum_partial_acc,
+        "Sum_RRR": sum_rrr,
+        "Sum_reasonable_operation_ratio": sum_reasonable_operation_ratio,
+    }
+
+    # 写入 JSON 文件
+    with open(output_file, 'w', encoding='utf-8') as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+
+    print(f"\n✓ 已计算全局指标并保存到 {output_file}")
+    print(f"  应用数量: {num_apps}")
+    print(f"  全局指标: Acc={result['Acc']:.4f} ({result['Acc']*100:.2f}%), "
+          f"Partial_Acc={result['Partial_Acc']:.4f} ({result['Partial_Acc']*100:.2f}%), "
+          f"RRR={result['RRR']:.4f} ({result['RRR']*100:.2f}%), "
+          f"reasonable_operation_ratio={result['reasonable_operation_ratio']:.4f} ({result['reasonable_operation_ratio']*100:.2f}%)")
 
 
 def evaluate_input_dir(input_dir, task_yamls, create_time, args):
