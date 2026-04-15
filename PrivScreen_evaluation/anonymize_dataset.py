@@ -7,7 +7,8 @@ Dataset image anonymization script for PrivScreen reproduction.
 - Write results to a new directory preserving structure.
 - Copy non-image files as-is.
 
-Depends on parent directory AndLab_protected (utils_mobile.privacy_protection).
+Depends on AndLab_protected on sys.path (utils_mobile.privacy_protection).
+Override install location with env ANDLAB_PROTECTED_ROOT if needed.
 """
 
 import os
@@ -15,13 +16,22 @@ import shutil
 from pathlib import Path
 from typing import List, Tuple, Dict
 
-# Import privacy layer from gui_privacy_protection/AndLab_protected
 import sys
+
 _here = os.path.dirname(os.path.abspath(__file__))
-_parent = os.path.abspath(os.path.join(_here, '..'))
-if _parent not in sys.path:
-    sys.path.insert(0, _parent)
-from AndLab_protected.utils_mobile.privacy_protection import PrivacyProtectionLayer
+_andlab_root = os.environ.get("ANDLAB_PROTECTED_ROOT")
+if _andlab_root:
+    _andlab_root = os.path.abspath(_andlab_root)
+else:
+    _andlab_root = os.path.abspath(os.path.join(_here, "..", "AndLab_protected"))
+if not os.path.isdir(_andlab_root):
+    raise RuntimeError(
+        f"AndLab_protected root not found: {_andlab_root!r}. "
+        "Place it next to PrivScreen_evaluation or set ANDLAB_PROTECTED_ROOT."
+    )
+if _andlab_root not in sys.path:
+    sys.path.insert(0, _andlab_root)
+from utils_mobile.privacy_protection import PrivacyProtectionLayer
 
 
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.tif', '.webp'}

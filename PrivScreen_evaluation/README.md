@@ -13,7 +13,7 @@ This directory contains the full pipeline for processing the **PrivScreen** data
 - Python 3.8+
 - Script dependencies:
   - **Step 1**: `huggingface_hub` (or use git)
-  - **Step 2**: Parent directory’s `AndLab_protected` (contains `utils_mobile.privacy_protection`; see AndLab_protected requirements for EasyOCR, GLiNER, Wand, etc.)
+  - **Step 2**: `AndLab_protected` as a **sibling** of `PrivScreen_evaluation` under `gui_privacy_protection` (script prepends that directory to `sys.path` and imports `utils_mobile.privacy_protection`). To use a different checkout, set **`ANDLAB_PROTECTED_ROOT`**. See AndLab_protected `requirements.txt` for EasyOCR, GLiNER, Wand, etc.
   - **Step 3**: `torch`, `transformers`, `bert-score`, `sentence-transformers`, `sacrebleu`, `rouge-score`, etc.; for API-based evaluation also `openai` or `google-generativeai`
 
 Recommend creating a virtual environment at the project root or under `gui_privacy_protection` and installing DualTAP and AndLab_protected dependencies.
@@ -83,7 +83,7 @@ Results include: average field match score, Leakage Rate, Response Rate, BERTSco
 | File | Source | Description |
 |------|--------|-------------|
 | `download_dataset.py` | DualTAP | Download PrivScreen |
-| `anonymize_dataset.py` | andlab root | Anonymization script; import updated to this repo’s AndLab_protected |
+| `anonymize_dataset.py` | andlab root | Anonymization; loads AndLab via `sys.path` + `utils_mobile.privacy_protection` (`ANDLAB_PROTECTED_ROOT` optional) |
 | `eval_original.py` | DualTAP | Evaluation entry (OriginalEvaluator) |
 | `config.py` | DualTAP | Evaluation config |
 | `dataset.py` | DualTAP | PrivacyProtectionDataset |
@@ -94,7 +94,7 @@ For a detailed map of which code does what, see **CODE_MAP.md**.
 
 ## Notes
 
-- Step 2 depends on the parent directory’s `AndLab_protected` (`utils_mobile.privacy_protection`). Do not move this directory outside the repo without it.
+- Step 2 expects `AndLab_protected` next to this folder (same parent as `PrivScreen_evaluation`), or set `ANDLAB_PROTECTED_ROOT` to its absolute path.
 - For local MLLM evaluation, set `surrogate_model_name` in `config.py` and ensure enough GPU/RAM; or use `--use-api` to avoid loading a large local model.
 - Field extraction requires an OpenAI-compatible API; configure via environment variables or `--extractor-api-key` / `--extractor-base-url`.
 - VQA API evaluation (when using `--use-api`) requires appropriate credentials; configure via `--vqa-api-key` / `--vqa-base-url`.

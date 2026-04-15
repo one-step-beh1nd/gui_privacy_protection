@@ -27,11 +27,12 @@ def download_with_huggingface_hub(repo_id, target_dir):
     print(f"Target directory: {target_dir}")
     
     try:
+        # Skip macOS junk; some HF mirrors return 403 on .DS_Store and abort the whole snapshot.
         snapshot_download(
             repo_id=repo_id,
             repo_type="dataset",
             local_dir=target_dir,
-            local_dir_use_symlinks=False  # use real files, not symlinks
+            ignore_patterns=["**/.DS_Store", ".DS_Store", "**/.ds_store"],
         )
         print(f"\n✓ Download complete.")
         print(f"Dataset location: {target_dir}")

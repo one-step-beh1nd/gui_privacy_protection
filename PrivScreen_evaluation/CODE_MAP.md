@@ -41,8 +41,7 @@ This document describes which code is responsible for **downloading the PrivScre
     If `privacy_layer` is not provided, creates `PrivacyProtectionLayer(enabled=True)`; for each image calls `identify_and_mask_screenshot_with_timing` and writes results to `output_dir`.
 - **Dependencies**:  
   - Originally used `sys.path.insert(0, 'AndLab-my')` and `from utils_mobile.privacy_protection import PrivacyProtectionLayer`.  
-  - **Actual** PrivacyProtectionLayer is in: `gui_privacy_protection/AndLab_protected/utils_mobile/privacy_protection.py`.  
-  For PrivScreen_evaluation, import from **AndLab_protected** (see directory layout).
+  - **Current**: `sys.path.insert(0, <AndLab_protected_root>)` then `from utils_mobile.privacy_protection import PrivacyProtectionLayer` (shim re-exports from `utils_mobile/privacy/`). Default root is `../AndLab_protected` next to this repo; override with env `ANDLAB_PROTECTED_ROOT`.
 - **Default args**: `--source ./DualTAP/data`, `--output ./DualTAP/test_speed`.  
   For reproduction: source = downloaded `data` (or `data/privscreen` depending on HuggingFace layout), output = e.g. `data_anonymized/privscreen`.
 
@@ -116,7 +115,7 @@ This document describes which code is responsible for **downloading the PrivScre
 | Use | Suggested file | Source / note |
 |-----|----------------|----------------|
 | Download | `download_dataset.py` | From DualTAP; may set default `--target` to local `data` |
-| Anonymization | `anonymize_dataset.py` | From andlab; **change import to AndLab_protected** (e.g. `sys.path.insert(0, '..')` then `from AndLab_protected.utils_mobile.privacy_protection import PrivacyProtectionLayer`) |
+| Anonymization | `anonymize_dataset.py` | From andlab; **insert `AndLab_protected` root** on `sys.path`, then `from utils_mobile.privacy_protection import PrivacyProtectionLayer` (optional `ANDLAB_PROTECTED_ROOT`) |
 | Evaluation | `eval_original.py`, `config.py`, `dataset.py`, `api_client.py`, `utils.py` (at least `compute_text_metrics` and its lazy deps) | From DualTAP; remove or refactor hardcoded HF_TOKEN/CUDA_VISIBLE_DEVICES in eval_original |
 | Docs | `README.md` | Reproduction steps: 1) download 2) anonymize 3) evaluate; dependencies, env vars, optional API config |
 
@@ -130,8 +129,8 @@ This document describes which code is responsible for **downloading the PrivScre
 
 - **Download dataset**: Only `DualTAP/download_dataset.py`.
 - **Process privscreen with PrivacyProtectionLayer**:  
-  - `anonymize_dataset.py` (with import changed to AndLab_protected);  
-  - Runtime dependency: `AndLab_protected/utils_mobile/privacy_protection.py` (and its deps: EasyOCR, GLiNER, Wand, etc.).
+  - `anonymize_dataset.py` (adds `AndLab_protected` root to `sys.path`, imports `utils_mobile.privacy_protection`);  
+  - Runtime dependency: `AndLab_protected/utils_mobile/privacy_protection.py` (shim) and `utils_mobile/privacy/` (and its deps: EasyOCR, GLiNER, Wand, etc.).
 - **Evaluate processed dataset**:  
   - `eval_original.py` (OriginalEvaluator, LLMFieldExtractor, main);  
   - `dataset.py` (PrivacyProtectionDataset, collate_fn);  
