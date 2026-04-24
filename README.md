@@ -1,6 +1,6 @@
 # Anonymization-Enhanced Privacy Protection for Mobile GUI Agents: Available but Invisible
 
-This repository contains two variants of the [AndroidLab](https://arxiv.org/abs/2410.24024) framework for training and benchmarking Android autonomous agents, plus a **PrivScreen** evaluation pipeline for reproducing privacy protection experiments.
+This repository contains a privacy-extended [AndroidLab](https://arxiv.org/abs/2410.24024)–style Android agent benchmark (**AndLab_protected**), plus a **PrivScreen** offline pipeline for screenshot anonymization and VQA-based privacy leakage evaluation (**PrivScreen_evaluation**).
 
 ---
 
@@ -8,13 +8,10 @@ This repository contains two variants of the [AndroidLab](https://arxiv.org/abs/
 
 | Directory | Description |
 |-----------|-------------|
-| **[AndLab_baseline](AndLab_baseline/)** | Original AndroidLab baseline with minor run-parameter adjustments. Use this for standard benchmarking without privacy protection. |
-| **[AndLab_protected](AndLab_protected/)** | Extends AndLab_baseline with an end-to-end **privacy protection layer**. Sensitive information (PII) is anonymized before data is sent to cloud-based GUI agents. Use this when you need privacy-preserving evaluation. |
-| **[PrivScreen_evaluation](PrivScreen_evaluation/)** | Full pipeline for processing the **PrivScreen** dataset with PrivacyProtectionLayer and evaluating privacy leakage. Use this to reproduce VQA-based privacy protection experiments. |
+| **[AndLab_protected](AndLab_protected/)** | Android agent benchmarking with a pluggable **privacy protection layer**. PII can be tokenized, replaced by a fixed placeholder, or protected via on-device screenshot perturbation (DualTap) before observations reach cloud GUI agents. |
+| **[PrivScreen_evaluation](PrivScreen_evaluation/)** | Download **PrivScreen** from Hugging Face, anonymize screenshots with `PrivacyProtectionLayer` (OCR + NER + masking), and run VQA evaluation (leakage rate, normal QA accuracy, BERTScore/BLEU/ROUGE-L, etc.). Imports the privacy stack from `AndLab_protected`. |
 
-- **AndLab_baseline**: The Android-Lab baseline framework with only some run-parameter modifications (e.g. unified `generate_result.py` usage, corrected `--task_id` format). No change to the core agent or pipeline.
-- **AndLab_protected**: Built on AndLab_baseline; adds the privacy protection layer. See [AndLab_protected/PRIVACY_PROTECTION_LAYER_DOCUMENTATION.md](AndLab_protected/PRIVACY_PROTECTION_LAYER_DOCUMENTATION.md) for full documentation.
-- **PrivScreen_evaluation**: Downloads PrivScreen from HuggingFace, anonymizes screenshots with PrivacyProtectionLayer (OCR + NER + masking), and runs VQA evaluation to compute privacy leakage rate, normal QA accuracy, BERTScore/BLEU/ROUGE-L, etc. Depends on AndLab_protected for the privacy protection module.
+Architecture and API details for the privacy layer: [AndLab_protected/PRIVACY_PROTECTION_LAYER_DOCUMENTATION.md](AndLab_protected/PRIVACY_PROTECTION_LAYER_DOCUMENTATION.md).
 
 ---
 
@@ -26,100 +23,71 @@ AndroidLab provides a systematic Android agent framework with an operation envir
 - **Execution**: AVD on Mac (arm64) or Docker on Linux (x86_64).
 - **Evaluation**: Success Rate (SR), Sub-Goal Success Rate (Sub-SR), Reversed Redundancy Ratio (RRR), Reasonable Operation Ratio (ROR).
 
-For the full leaderboard, paper, and dataset details, see [AndLab_baseline/README.md](AndLab_baseline/README.md).
+Upstream paper, leaderboard, and dataset pointers: [AndroidLab on arXiv](https://arxiv.org/abs/2410.24024). Day-to-day commands for this repo: [AndLab_protected/README.md](AndLab_protected/README.md).
 
 ---
 
 ## Quick Start
 
-### Prerequisites (common to both)
+### AndLab_protected (agent evaluation)
 
 ```bash
-cd /path/to/gui_privacy_protection/<AndLab_baseline or AndLab_protected>
+cd /path/to/gui_privacy_protection/AndLab_protected
 conda create -n Android-Lab python=3.11
 conda activate Android-Lab
 pip install -r requirements.txt
 ```
 
-Environment setup (AVD on Mac, Docker on Linux, etc.) is documented inside each variant’s `docs/` folder.
+Environment setup (AVD on Mac, Docker on Linux, etc.) is under `AndLab_protected/docs/`.
 
-### AndLab_baseline
-
-1. **Run evaluation** (from `AndLab_baseline/`):
+1. **Run evaluation**:
    ```bash
-   python eval.py -n test_name -c /path/to/config.yaml
+   python eval.py -n paper_xml -c ./configs/gpt-4o-linux-XML.yaml
    ```
-   - Optional: `--task_id taskid_1 taskid_2 ...` (space-separated), `-p N` for parallel runs.
-2. **Generate results**:
+   - Optional: `--task_id taskid_1,taskid_2,...` (format per your config).
+   - **Parallel workers**: `-p N` / `--parallel N` (default `1` = serial; use `N > 1` to distribute tasks—see [AndLab_protected/README.md](AndLab_protected/README.md)).
+2. **Generate results** (from `AndLab_protected/`):
    ```bash
    python generate_result.py \
      --input_folder ./logs/evaluation \
      --output_folder ./outputs \
-     --output_excel ./outputs/[name].xlsx \
-     --judge_model [glm4|gpt-4o] \
-     --api_key [key] \
-     --target_dirs [dir1] [dir2] ...
+     --output_excel ./outputs/paper_xml.xlsx \
+     --judge_model gpt-4o \
+     --api_key your-api-key \
+     --target_dirs paper_xml
    ```
 
-Full commands and options: [AndLab_baseline/README.md](AndLab_baseline/README.md).
+Full options: [AndLab_protected/README.md](AndLab_protected/README.md).
 
-### AndLab_protected
+### PrivScreen_evaluation (dataset + anonymization + VQA eval)
 
-1. **Run evaluation** (from `AndLab_protected/`):
-   ```bash
-   python eval.py -n paper_xml -c ./configs/gpt-4o-linux-XML.yaml
-   ```
-   - Parallel execution (`-p`) is not supported; tasks run sequentially.
-2. **Generate results**: Same `generate_result.py` interface as baseline (see above).
+Use a Python environment with **both** [AndLab_protected/requirements.txt](AndLab_protected/requirements.txt) (for anonymization: EasyOCR, GLiNER, etc.) and the evaluation dependencies listed in [PrivScreen_evaluation/README.md](PrivScreen_evaluation/README.md) (`torch`, metrics stack, optional API clients).
 
-Full commands and privacy layer details: [AndLab_protected/README.md](AndLab_protected/README.md).
+```bash
+cd /path/to/gui_privacy_protection/PrivScreen_evaluation
+```
 
-### PrivScreen_evaluation
-
-Three-step pipeline to reproduce PrivScreen privacy protection evaluation:
-
-1. **Download dataset** (from `PrivScreen_evaluation/`):
+1. **Download dataset** (defaults `fyzzzzzz/PrivScreen` to `--target`; if `HF_ENDPOINT` is unset, [download_dataset.py](PrivScreen_evaluation/download_dataset.py) defaults it to `https://hf-mirror.com`—override with `export HF_ENDPOINT=...` if needed):
    ```bash
    python download_dataset.py --target ./data
    ```
-2. **Anonymize** with PrivacyProtectionLayer:
+2. **Anonymize** with `PrivacyProtectionLayer` (expects `../AndLab_protected` as sibling, or set `ANDLAB_PROTECTED_ROOT`):
    ```bash
-   python anonymize_dataset.py --source ./data/privscreen --output ./data_anonymized/privscreen
+   python anonymize_dataset.py --source ./data --output ./data_anonymized/privscreen
    ```
-3. **Evaluate** the anonymized data:
+   If snapshots unpack under `./data/privscreen/`, use `--source ./data/privscreen` instead.
+3. **Evaluate** anonymized data:
    ```bash
    python eval_original.py --data-root ./data_anonymized/privscreen --output ./eval_results/anonymized.json
    ```
 
-Full workflow, arguments, and dependencies: [PrivScreen_evaluation/README.md](PrivScreen_evaluation/README.md).
-
----
-
-## Generating Evaluation Results (both variants)
-
-Both variants use the same `generate_result.py` interface:
-
-- **Judge models**: `glm4` or `gpt-4o`.
-- **Target dirs**: `--target_dirs` takes one or more space-separated directory names under `--input_folder`.
-
-Example:
-
-```bash
-python generate_result.py \
-  --input_folder ./logs/evaluation \
-  --output_folder ./outputs \
-  --output_excel ./outputs/paper_xml.xlsx \
-  --judge_model gpt-4o \
-  --api_key your-api-key \
-  --target_dirs paper_xml
-```
-
-For gpt-4o with OpenAI’s default endpoint, you can omit `--api_key` and `--api_base` if `OPENAI_API_KEY` is set.
+Full workflow: [PrivScreen_evaluation/README.md](PrivScreen_evaluation/README.md). Code map: [PrivScreen_evaluation/CODE_MAP.md](PrivScreen_evaluation/CODE_MAP.md).
 
 ---
 
 ## Citation
-**Privacy-protected variant (AndLab_protected):**
+
+**Privacy-protected Android agent work (AndLab_protected):**
 
 ```bibtex
 @misc{zhao2026anonymizationenhancedprivacyprotectionmobile,

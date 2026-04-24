@@ -1,6 +1,16 @@
 # PrivScreen Experiment Code Map
 
-This document describes which code is responsible for **downloading the PrivScreen dataset**, **processing it with PrivacyProtectionLayer**, and **evaluating the processed data**, to facilitate reproduction and extraction.
+This document describes which code in **`PrivScreen_evaluation/`** is responsible for **downloading the PrivScreen dataset**, **masking screenshots with `PrivacyProtectionLayer`**, and **evaluating the processed data**, for reproduction and navigation.
+
+Expected clone layout: `gui_privacy_protection/PrivScreen_evaluation/` next to `gui_privacy_protection/AndLab_protected/` (privacy implementation).
+
+```mermaid
+flowchart LR
+  download[download_dataset]
+  anonymize[anonymize_dataset]
+  evaluate[eval_original]
+  download --> anonymize --> evaluate
+```
 
 ---
 
@@ -8,134 +18,104 @@ This document describes which code is responsible for **downloading the PrivScre
 
 | Step | Purpose | Main code location |
 |------|---------|---------------------|
-| 1. Download dataset | Download PrivScreen from HuggingFace to local | `DualTAP/download_dataset.py` |
-| 2. Anonymization | Run OCR + NER + masking on each screenshot via PrivacyProtectionLayer, output to a new directory | `andlab/anonymize_dataset.py` + `AndLab_protected/utils_mobile/privacy_protection.py` |
-| 3. Evaluation | Run VQA on processed images and compute privacy leakage rate, normal QA accuracy, etc. | `DualTAP/eval_original.py` + dependencies |
+| 1. Download dataset | Download PrivScreen from Hugging Face to a local directory | [`download_dataset.py`](download_dataset.py) |
+| 2. Anonymization | OCR + NER + masking per screenshot via `PrivacyProtectionLayer`; output preserves directory layout | [`anonymize_dataset.py`](anonymize_dataset.py) + [`../AndLab_protected/utils_mobile/privacy_protection.py`](../AndLab_protected/utils_mobile/privacy_protection.py) (shim → `utils_mobile/privacy/`) |
+| 3. Evaluation | VQA on processed images; privacy leakage rate, normal QA accuracy, text metrics | [`eval_original.py`](eval_original.py) + [`config.py`](config.py), [`dataset.py`](dataset.py), [`api_client.py`](api_client.py), [`utils.py`](utils.py) |
 
 ---
 
 ## 2. Step 1: Download dataset
 
-### File: `mobile/andlab/DualTAP/download_dataset.py`
+### File: [`download_dataset.py`](download_dataset.py)
 
-- **Purpose**: Download the PrivScreen dataset from HuggingFace to a specified directory.
+- **Purpose**: Download the PrivScreen dataset from Hugging Face into a chosen directory.
 - **Key content**:
   - `download_with_huggingface_hub(repo_id, target_dir)`: uses `huggingface_hub.snapshot_download` (recommended).
   - `download_with_git(repo_id, target_dir)`: fallback using `git clone`.
-  - Defaults: `repo_id='fyzzzzzz/PrivScreen'`, `target_dir` default `./data`.
-- **Dependencies**: `huggingface_hub` (or git).
+  - Defaults: `repo_id='fyzzzzzz/PrivScreen'`, target from CLI (`--target`, often `./data`).
+  - If `HF_ENDPOINT` is not already set in the environment, the script sets a default mirror (`https://hf-mirror.com`); export `HF_ENDPOINT` yourself to use the public Hugging Face hub or another mirror.
+- **Dependencies**: `huggingface_hub` (or `git` for fallback).
 - **Usage**:  
   `python download_dataset.py --target ./data`  
-  After download, directory structure: `data/{app}/images/*.png`, `privacy_qa.json`, `normal_qa.json`.
+  After download, layout is typically `./data/{app}/images/*.png` plus `privacy_qa.json` and `normal_qa.json` per app, or a nested `./data/privscreen/...` depending on the dataset snapshot—point `--source` at the directory that actually contains the app folders.
 
 ---
 
-## 3. Step 2: Process PrivScreen with PrivacyProtectionLayer
+## 3. Step 2: Process PrivScreen with `PrivacyProtectionLayer`
 
-### 3.1 Anonymization script: `mobile/andlab/anonymize_dataset.py`
+### 3.1 Script: [`anonymize_dataset.py`](anonymize_dataset.py)
 
-- **Purpose**: Walk a directory of images, anonymize with **PrivacyProtectionLayer** (OCR → NER for sensitive info → masking), write to output directory preserving structure; non-image files are copied as-is.
+- **Purpose**: Walk all files under a source tree, anonymize images with **`PrivacyProtectionLayer`**, write to `output_dir` preserving relative paths; non-images are copied as-is.
+- **Path to AndLab**: Prepends `ANDLAB_PROTECTED_ROOT` if set, otherwise `../AndLab_protected` relative to this file. Raises if that directory is missing.
 - **Key functions**:
-  - `get_all_files(source_dir)`: list all files under source as (relative_path, absolute_path).
-  - `anonymize_dataset(source_dir, output_dir, privacy_layer=None)`:  
-    If `privacy_layer` is not provided, creates `PrivacyProtectionLayer(enabled=True)`; for each image calls `identify_and_mask_screenshot_with_timing` and writes results to `output_dir`.
-- **Dependencies**:  
-  - Originally used `sys.path.insert(0, 'AndLab-my')` and `from utils_mobile.privacy_protection import PrivacyProtectionLayer`.  
-  - **Current**: `sys.path.insert(0, <AndLab_protected_root>)` then `from utils_mobile.privacy_protection import PrivacyProtectionLayer` (shim re-exports from `utils_mobile/privacy/`). Default root is `../AndLab_protected` next to this repo; override with env `ANDLAB_PROTECTED_ROOT`.
-- **Default args**: `--source ./DualTAP/data`, `--output ./DualTAP/test_speed`.  
-  For reproduction: source = downloaded `data` (or `data/privscreen` depending on HuggingFace layout), output = e.g. `data_anonymized/privscreen`.
+  - `get_all_files(source_dir)`: returns `(relative_path, absolute_path)` for every file.
+  - `anonymize_dataset(source_dir, output_dir, privacy_layer=None)`: if `privacy_layer` is omitted, constructs `PrivacyProtectionLayer(enabled=True)`; for each image calls `identify_and_mask_screenshot_with_timing` and writes outputs.
+- **Default CLI** (see script `--help`): e.g. `--source` / `--output`; use a source path that matches your download layout (`./data` or `./data/privscreen`).
 
-### 3.2 Privacy protection layer: `gui_privacy_protection/AndLab_protected/utils_mobile/privacy_protection.py`
+### 3.2 Privacy implementation: [`../AndLab_protected/utils_mobile/privacy_protection.py`](../AndLab_protected/utils_mobile/privacy_protection.py)
 
-- **Purpose**: Implements the screenshot anonymization pipeline.
-- **Relevant API for this experiment**:
-  - `PrivacyProtectionLayer(enabled=True/False)`: construct the layer.
-  - `identify_and_mask_screenshot_with_timing(image_path)`:  
-    Runs OCR + NER + masking on one screenshot; returns `((masked_image_path, tokens), timing_dict)` with `ocr_time`, `ner_time`, `total_time` in `timing_dict`.  
-- **Note**: anonymize_dataset only uses the above; no need to change privacy_protection.py; ensure the module under AndLab_protected can be imported.
+- **Purpose**: Shim re-exporting the token anonymization layer and related APIs from `utils_mobile/privacy/` (see [PRIVACY_PROTECTION_LAYER_DOCUMENTATION.md](../AndLab_protected/PRIVACY_PROTECTION_LAYER_DOCUMENTATION.md)).
+- **API used here**:
+  - `PrivacyProtectionLayer(enabled=True)`.
+  - `identify_and_mask_screenshot_with_timing(image_path)` → `((masked_image_path, tokens), timing_dict)` with timing fields such as `ocr_time`, `ner_time`, `total_time`.
 
 ---
 
 ## 4. Step 3: Evaluate the processed dataset
 
-### 4.1 Evaluation entry: `mobile/andlab/DualTAP/eval_original.py`
+### 4.1 Entry: [`eval_original.py`](eval_original.py)
 
-- **Purpose**: Evaluate **processed images** with **no perturbation**—reads images and QA under data_anonymized, uses a surrogate VQA model + LLM field extraction to compute:
-  - Privacy: field match score, Leakage Rate, Response Rate, BERTScore/BLEU/ROUGE-L, etc.;
-  - Normal QA: accuracy (rule-based or GPT judgment).
-- **Key classes**:
-  - `LLMFieldExtractor`: uses an OpenAI-compatible API to extract specified fields from text (for matching GT vs predicted answers).
-  - `OriginalEvaluator`:  
-    - Loads Config, dataset, local or API surrogate model;  
-    - `evaluate(dataset, output_path)`: iterates dataset, runs `query_model(images, question)` per image, then LLM field extraction + match/leak judgment for privacy QA, keyword or GPT judgment for normal QA;  
-    - Supports `--data-root` to set data root (e.g. `./data_anonymized/privscreen`).
-- **CLI**:  
-  `--output`, `--llm-model`, `--normal-judge`, `--app`, **`--data-root`** (overrides config.data_root), `--use-api`, `--api-type`, `--api-key`, `--api-model`, `--api-base-url`, `--llm-api-key`, `--llm-base-url`, etc.
-- **Note**: Avoid hardcoding HF_TOKEN etc. in the script; use environment variables for reproduction.
+- **Purpose**: Evaluate **processed** images (no extra perturbation). Reads images and QA JSONs, runs a surrogate VQA model (local or API), uses an LLM field extractor for structured privacy fields, and computes leakage / QA metrics.
+- **Key pieces**:
+  - `LLMFieldExtractor`: OpenAI-compatible API for JSON field extraction (API key from args or `OPENAI_API_KEY`). Effective extractor model name comes from CLI **`--extractor-model`** (default `gpt-4o-mini` in `argparse`), not the class default if you only use `main()`.
+  - `OriginalEvaluator`: loads config/dataset, `evaluate(dataset, output_path)`, optional `--use-api` for VQA APIs.
+- **CLI highlights**: `--data-root`, `--output`, `--app`, `--normal-judge`, `--use-api`, `--vqa-*`, `--extractor-*`. Prefer environment variables for secrets; do not commit API keys.
 
-### 4.2 Dataset class: `mobile/andlab/DualTAP/dataset.py`
+### 4.2 Dataset: [`dataset.py`](dataset.py)
 
-- **Purpose**: Loads data by PrivScreen layout (`data_root/{app}/images/` + `privacy_qa.json` + `normal_qa.json`) for the evaluator.
-- **Key**:  
-  - `PrivacyProtectionDataset(data_root, image_size, app_filter, split, split_ratio)`.  
-  - `collate_fn(batch)`: DataLoader `collate_fn` used in eval_original.
-- **Relation to processed data**: Pointing `data_root` to the anonymization output (e.g. `data_anonymized/privscreen`) yields processed images and original QA; no dataset logic change needed.
+- **Purpose**: `PrivacyProtectionDataset` for PrivScreen layout: `data_root/{app}/images/` plus `privacy_qa.json` and `normal_qa.json`. `collate_fn` for `DataLoader`.
 
-### 4.3 Config: `mobile/andlab/DualTAP/config.py`
+### 4.3 Config: [`config.py`](config.py)
 
-- **Purpose**: `Config` class with `data_root`, `image_size`, `train_split_ratio`, `surrogate_model_name`, `device`, etc.  
-- **At evaluation**: If `--data-root` is passed in eval_original's main, it overrides `config.data_root`; other settings (e.g. image_size, surrogate_model_name) still come from config for loading model and dataset.
+- **Purpose**: `Config` (`data_root`, `image_size`, `train_split_ratio`, `surrogate_model_name`, `device`, …). `eval_original.py` overrides `data_root` when `--data-root` is passed.
 
-### 4.4 Surrogate model API: `mobile/andlab/DualTAP/api_client.py`
+### 4.4 API client: [`api_client.py`](api_client.py)
 
-- **Purpose**: `APIClient`: calls vision QA API via OpenAI-compatible interface or Gemini.  
-- **Usage in eval_original**: When `OriginalEvaluator(..., use_api=True, ...)`, `query_model` uses `APIClient`; otherwise uses local MLLM.
+- **Purpose**: `APIClient` for OpenAI-compatible or Gemini-style vision QA when `--use-api` is set.
 
-### 4.5 Text metrics: `mobile/andlab/DualTAP/utils.py`
+### 4.5 Text metrics: [`utils.py`](utils.py)
 
-- **Purpose**: `compute_text_metrics(pred_text, true_text)` computes BERTScore F1, cosine similarity, BLEU, ROUGE-L (lazy-loads bert_score, sentence_transformers, sacrebleu, rouge_score).  
-- **Usage in eval_original**: Called when computing similarity for each privacy field’s predicted vs ground-truth value.
+- **Purpose**: `compute_text_metrics` (BERTScore, cosine, BLEU, ROUGE-L, etc.) with lazy imports of optional packages.
 
 ---
 
-## 5. Data and path conventions (for reproduction)
+## 5. Data and path conventions
 
-- **Download**: Result in `./data` (or the directory chosen for the script). Under it: PrivScreen’s `{app}/images/` + `privacy_qa.json` + `normal_qa.json`. If the HuggingFace package has a `privscreen` subfolder, the root may be `./data/privscreen`; adjust paths accordingly.
-- **Anonymization**:  
-  - Input: the above `data` (or `data/privscreen`).  
-  - Output: e.g. `./data_anonymized/privscreen`, same structure as input with images replaced by masked versions.
-- **Evaluation**:  
-  - `--data-root ./data_anonymized/privscreen` (or your actual output path).  
-  The evaluator reads `images/` and the two JSON files per app under that root; no code change needed.
+- **Download output**: e.g. `./data` or `./data/privscreen`; confirm where `{app}/images/` and the QA JSONs live before anonymizing.
+- **Anonymization**: `--source` = that root; `--output` = e.g. `./data_anonymized/privscreen` (same structure, masked images).
+- **Evaluation**: `--data-root ./data_anonymized/privscreen` (or your actual output path).
 
 ---
 
-## 6. Files to include when extracting to PrivScreen_evaluation
+## 6. Files in this directory (inventory)
 
-| Use | Suggested file | Source / note |
-|-----|----------------|----------------|
-| Download | `download_dataset.py` | From DualTAP; may set default `--target` to local `data` |
-| Anonymization | `anonymize_dataset.py` | From andlab; **insert `AndLab_protected` root** on `sys.path`, then `from utils_mobile.privacy_protection import PrivacyProtectionLayer` (optional `ANDLAB_PROTECTED_ROOT`) |
-| Evaluation | `eval_original.py`, `config.py`, `dataset.py`, `api_client.py`, `utils.py` (at least `compute_text_metrics` and its lazy deps) | From DualTAP; remove or refactor hardcoded HF_TOKEN/CUDA_VISIBLE_DEVICES in eval_original |
-| Docs | `README.md` | Reproduction steps: 1) download 2) anonymize 3) evaluate; dependencies, env vars, optional API config |
+| Role | File |
+|------|------|
+| Download | `download_dataset.py` |
+| Batch screenshot masking | `anonymize_dataset.py` |
+| Evaluation driver | `eval_original.py` |
+| Supporting modules | `config.py`, `dataset.py`, `api_client.py`, `utils.py` |
+| User-facing steps | `README.md` |
+| This map | `CODE_MAP.md` |
 
-**Do not** copy:  
-- DualTAP code for training, adversarial samples, attention (e.g. eval.py, train_map.py, attention.py, generator.py).  
-- Scripts only used for other tasks or finding missing samples (find_missing_sample, eval_missing_sample, update_normal, etc.) unless needed.
+These scripts were adapted from an earlier **DualTAP** / **andlab** tree; this repo keeps a self-contained **`PrivScreen_evaluation`** package—no `mobile/andlab/...` paths.
 
 ---
 
-## 7. Summary: which code you need
+## 7. Summary
 
-- **Download dataset**: Only `DualTAP/download_dataset.py`.
-- **Process privscreen with PrivacyProtectionLayer**:  
-  - `anonymize_dataset.py` (adds `AndLab_protected` root to `sys.path`, imports `utils_mobile.privacy_protection`);  
-  - Runtime dependency: `AndLab_protected/utils_mobile/privacy_protection.py` (shim) and `utils_mobile/privacy/` (and its deps: EasyOCR, GLiNER, Wand, etc.).
-- **Evaluate processed dataset**:  
-  - `eval_original.py` (OriginalEvaluator, LLMFieldExtractor, main);  
-  - `dataset.py` (PrivacyProtectionDataset, collate_fn);  
-  - `config.py` (Config);  
-  - `api_client.py` (APIClient);  
-  - `utils.py` (at least `compute_text_metrics` and the `_lazy_import_*` used by it).
+- **Download**: `download_dataset.py`.
+- **Anonymize with `PrivacyProtectionLayer`**: `anonymize_dataset.py` + `AndLab_protected` on `PYTHONPATH` (sibling checkout or `ANDLAB_PROTECTED_ROOT`).
+- **Evaluate**: `eval_original.py` with `dataset.py`, `config.py`, `api_client.py`, `utils.py`.
 
-After extracting with the above list and fixing paths and sensitive config, you can reproduce the full **download → anonymize → evaluate** workflow under `PrivScreen_evaluation`.
+For Android **agent** runs (XML/SoM + full privacy strategies in YAML), use **`AndLab_protected/`** and the long-form doc linked above—not this folder’s `eval_original.py`.

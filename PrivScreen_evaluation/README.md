@@ -16,7 +16,7 @@ This directory contains the full pipeline for processing the **PrivScreen** data
   - **Step 2**: `AndLab_protected` as a **sibling** of `PrivScreen_evaluation` under `gui_privacy_protection` (script prepends that directory to `sys.path` and imports `utils_mobile.privacy_protection`). To use a different checkout, set **`ANDLAB_PROTECTED_ROOT`**. See AndLab_protected `requirements.txt` for EasyOCR, GLiNER, Wand, etc.
   - **Step 3**: `torch`, `transformers`, `bert-score`, `sentence-transformers`, `sacrebleu`, `rouge-score`, etc.; for API-based evaluation also `openai` or `google-generativeai`
 
-Recommend creating a virtual environment at the project root or under `gui_privacy_protection` and installing DualTAP and AndLab_protected dependencies.
+Recommend a dedicated virtual environment and installing **both** [`../AndLab_protected/requirements.txt`](../AndLab_protected/requirements.txt) (Step 2: EasyOCR, GLiNER, masking stack) and the **Step 3** packages above (`pip install torch transformers ...` as needed for local MLLM and metrics). This repo does not ship a separate `DualTAP/` tree; all scripts live in this directory.
 
 ## Reproduction steps
 
@@ -27,11 +27,7 @@ cd /path/to/gui_privacy_protection/PrivScreen_evaluation
 python download_dataset.py --target ./data
 ```
 
-By default this downloads `fyzzzzzz/PrivScreen` to `./data`. If you need a mirror:
-
-```bash
-export HF_ENDPOINT=https://hf-mirror.com
-```
+By default this downloads `fyzzzzzz/PrivScreen` to `./data`. The script sets a default `HF_ENDPOINT` mirror when the variable is unset; to force the public Hugging Face hub, run `export HF_ENDPOINT=https://huggingface.co` (or clear it per your shell) before invoking the script.
 
 ### Step 2: Anonymize with PrivacyProtectionLayer
 
@@ -78,17 +74,17 @@ Common arguments:
 
 Results include: average field match score, Leakage Rate, Response Rate, BERTScore/BLEU/ROUGE-L, Normal QA accuracy, etc.
 
-## Code source
+## Code provenance
 
-| File | Source | Description |
-|------|--------|-------------|
-| `download_dataset.py` | DualTAP | Download PrivScreen |
-| `anonymize_dataset.py` | andlab root | Anonymization; loads AndLab via `sys.path` + `utils_mobile.privacy_protection` (`ANDLAB_PROTECTED_ROOT` optional) |
-| `eval_original.py` | DualTAP | Evaluation entry (OriginalEvaluator) |
-| `config.py` | DualTAP | Evaluation config |
-| `dataset.py` | DualTAP | PrivacyProtectionDataset |
-| `api_client.py` | DualTAP | API surrogate model |
-| `utils.py` | DualTAP | Text metrics and helpers |
+| File | Note | Description |
+|------|------|-------------|
+| `download_dataset.py` | Maintained in-repo | Download PrivScreen |
+| `anonymize_dataset.py` | Maintained in-repo | Anonymization; loads `AndLab_protected` via `sys.path` + `utils_mobile.privacy_protection` (`ANDLAB_PROTECTED_ROOT` optional) |
+| `eval_original.py` | Adapted from earlier research codebases | Evaluation entry (`OriginalEvaluator`) |
+| `config.py` | Adapted | Evaluation `Config` |
+| `dataset.py` | Adapted | `PrivacyProtectionDataset` |
+| `api_client.py` | Adapted | API surrogate / vision client |
+| `utils.py` | Adapted | Text metrics and helpers |
 
 For a detailed map of which code does what, see **CODE_MAP.md**.
 

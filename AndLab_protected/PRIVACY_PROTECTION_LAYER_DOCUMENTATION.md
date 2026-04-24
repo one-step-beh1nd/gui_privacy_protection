@@ -22,6 +22,11 @@ from utils_mobile.privacy_protection import (
 
 Strategies are selected from the evaluation YAML (`privacy.method`) and installed per task in [`evaluation/auto_test.py`](evaluation/auto_test.py) via `set_privacy_layer(create_privacy_layer(self.config.privacy))`.
 
+### In this repository (`gui_privacy_protection`)
+
+- **Android agent evaluation + privacy hooks**: this directory, `AndLab_protected/`. All file paths in the sections below are relative to `AndLab_protected/` unless stated otherwise.
+- **PrivScreen offline pipeline**: sibling directory [`PrivScreen_evaluation/`](../PrivScreen_evaluation/) downloads the PrivScreen dataset, runs screenshot masking via `from utils_mobile.privacy_protection import PrivacyProtectionLayer` (with `AndLab_protected` on `sys.path` or `ANDLAB_PROTECTED_ROOT`), then VQA evaluation. Repo overview: [README.md](../README.md). PrivScreen install and CLI: [PrivScreen_evaluation/README.md](../PrivScreen_evaluation/README.md), code map: [PrivScreen_evaluation/CODE_MAP.md](../PrivScreen_evaluation/CODE_MAP.md).
+
 ## Table of Contents
 
 1. [Privacy strategies](#privacy-strategies)
@@ -204,7 +209,7 @@ Format: `{NORMALIZED_ENTITY_TYPE}#{hash5}` with SHA-256–based base36 hash over
 
 ## Libraries and installation
 
-From the repository root (this project, **not** a legacy `mobile/andlab/...` path):
+From the **`AndLab_protected/`** directory in this repo (not a legacy `mobile/andlab/...` path):
 
 ```bash
 cd /path/to/AndLab_protected
@@ -215,6 +220,8 @@ pip install gliner   # used by detection mixin; not always pinned in requirement
 ```
 
 [`requirements.txt`](requirements.txt) already includes `torch`, `transformers`, `easyocr`, `Pillow`, `Levenshtein`, `wand`, etc. DualTap additionally relies on the bundled `dualtap_runtime` and a compatible PyTorch install for your hardware.
+
+If you also run the **PrivScreen** scripts in [`PrivScreen_evaluation/`](../PrivScreen_evaluation/), install their evaluator dependencies (e.g. BERTScore, `sentence-transformers`, API clients) as described in [`PrivScreen_evaluation/README.md`](../PrivScreen_evaluation/README.md)—`AndLab_protected/requirements.txt` alone is not always sufficient for `eval_original.py`.
 
 Optional mirror for model downloads (see also [`eval.py`](eval.py) which sets `HF_ENDPOINT`):
 

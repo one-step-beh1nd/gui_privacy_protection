@@ -23,10 +23,10 @@ Optional: `pip install gliner` if not already satisfied by your environment (use
 
 ## Environment Setup
 
-Clone the repository and install dependencies:
+Clone the repository and install dependencies. In the full **`gui_privacy_protection`** checkout, this directory is `gui_privacy_protection/AndLab_protected` (sibling of `PrivScreen_evaluation/`).
 
 ```bash
-cd /path/to/AndLab_protected
+cd /path/to/gui_privacy_protection/AndLab_protected
 conda create -n Android-Lab python=3.11
 conda activate Android-Lab
 pip install -r requirements.txt
