@@ -2,11 +2,14 @@ from typing import List, Dict, Any, Optional
 
 import backoff
 import json
+import os
+import time
 import requests
 from openai import OpenAI
 
 from agent.utils import *
 from templates.android_screenshot_template import *
+from utils_mobile.debug_logger import log_debug_event
 
 
 def capture_llm_raw_response(agent: Any, response_obj: Any) -> None:
@@ -104,15 +107,49 @@ class OpenAIAgent(Agent):
         max_tries=10
     )
     def act(self, messages: List[Dict[str, Any]]) -> str:
-        r = self.client.chat.completions.create(
+        start_ts = time.time()
+        image_count = 0
+        for message in messages:
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    image_count += 1
+        log_debug_event(
+            "openai_agent_request_started",
             model=self.model_name,
-            messages=messages,
+            message_count=len(messages),
+            image_count=image_count,
             max_tokens=self.max_new_tokens,
             temperature=self.temperature,
-            top_p=self.top_p
+            top_p=self.top_p,
         )
+        try:
+            r = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                max_tokens=self.max_new_tokens,
+                temperature=self.temperature,
+                top_p=self.top_p
+            )
+        except Exception as exc:
+            log_debug_event(
+                "openai_agent_request_failed",
+                model=self.model_name,
+                elapsed_sec=round(time.time() - start_ts, 3),
+                error=str(exc),
+            )
+            raise
         capture_llm_raw_response(self, r)
-        return r.choices[0].message.content
+        content = r.choices[0].message.content
+        log_debug_event(
+            "openai_agent_request_completed",
+            model=self.model_name,
+            elapsed_sec=round(time.time() - start_ts, 3),
+            response_chars=len(content) if isinstance(content, str) else None,
+        )
+        return content
 
     def prompt_to_message(self, prompt, images):
         content = [
@@ -123,6 +160,14 @@ class OpenAIAgent(Agent):
         ]
         for img in images:
             base64_img = image_to_base64(img)
+            log_debug_event(
+                "openai_agent_image_attached",
+                image_path=img,
+                image_ext=os.path.splitext(img)[1].lower(),
+                declared_mime="image/jpeg",
+                base64_chars=len(base64_img),
+                prompt_chars=len(prompt or ""),
+            )
             content.append({
                 "type": "image_url",
                 "image_url": {

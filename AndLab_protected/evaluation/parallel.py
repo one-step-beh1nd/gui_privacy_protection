@@ -30,6 +30,7 @@ def parallel_worker(class_, config, parallel, tasks):
             task = tasks.pop(0)
 
             config_copy = copy.deepcopy(config)
+            config_copy.parallel_workers = parallel
             auto_class = class_(config_copy)
 
             future = executor.submit(auto_class.run_task, task, instance)

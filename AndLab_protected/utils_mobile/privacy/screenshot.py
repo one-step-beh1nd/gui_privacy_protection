@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from utils_mobile.debug_logger import log_debug_event
+
 try:
     import easyocr
 except Exception:  # pragma: no cover - optional dependency
@@ -57,6 +59,7 @@ class ScreenshotMixin:
         if self._ocr_reader or not self.enabled:
             return
         if easyocr is None:
+            log_debug_event("easyocr_unavailable", reason="module_import_failed")
             print(
                 "[PrivacyProtection] EasyOCR is not installed. "
                 "Skipping screenshot anonymization."
@@ -69,8 +72,11 @@ class ScreenshotMixin:
                 use_gpu = _torch.cuda.is_available()
             except Exception:  # pragma: no cover - runtime safety
                 use_gpu = False
+            log_debug_event("easyocr_load_started", languages=langs, use_gpu=use_gpu)
             self._ocr_reader = easyocr.Reader(langs, gpu=use_gpu)
+            log_debug_event("easyocr_load_completed", languages=langs, use_gpu=use_gpu)
         except Exception as exc:  # pragma: no cover - runtime safety
+            log_debug_event("easyocr_load_failed", error=str(exc))
             print(f"[PrivacyProtection] Failed to init EasyOCR: {exc}")
             self._ocr_reader = None
 
@@ -286,14 +292,17 @@ class ScreenshotMixin:
         }
         
         total_start = time.time()
+        log_debug_event("privacy_screenshot_mask_started", image_path=image_path)
         
         if not self.enabled:
             timing['total_time'] = time.time() - total_start
+            log_debug_event("privacy_screenshot_mask_skipped", image_path=image_path, reason="privacy_disabled")
             return (image_path, {}), timing
 
         self._ensure_ocr_reader()
         if not self._ocr_reader:
             timing['total_time'] = time.time() - total_start
+            log_debug_event("privacy_screenshot_mask_skipped", image_path=image_path, reason="ocr_reader_unavailable")
             return (image_path, {}), timing
 
         ocr_start = time.time()
@@ -303,6 +312,13 @@ class ScreenshotMixin:
             print(f"[PrivacyProtection] OCR failed: {exc}")
             timing['ocr_time'] = time.time() - ocr_start
             timing['total_time'] = time.time() - total_start
+            log_debug_event(
+                "privacy_screenshot_mask_failed",
+                image_path=image_path,
+                stage="ocr",
+                error=str(exc),
+                timing=timing,
+            )
             return (image_path, {}), timing
         ocr_time = time.time() - ocr_start
         timing['ocr_time'] = ocr_time
@@ -314,6 +330,7 @@ class ScreenshotMixin:
         
         if not ocr_data:
             timing['total_time'] = time.time() - total_start
+            log_debug_event("privacy_screenshot_mask_completed", image_path=image_path, ocr_items=0, timing=timing)
             return (image_path, {}), timing
 
         MAX_CHUNK_SIZE = 500
@@ -473,6 +490,16 @@ class ScreenshotMixin:
 
         if not regions:
             timing['total_time'] = time.time() - total_start
+            log_debug_event(
+                "privacy_screenshot_mask_completed",
+                image_path=image_path,
+                masked_image_path=image_path,
+                ocr_items=len(ocr_data),
+                segment_count=len(segments),
+                token_count=len(aggregate_new_tokens),
+                region_count=0,
+                timing=timing,
+            )
             return (image_path, aggregate_new_tokens), timing
 
         masked_image_path = image_path.replace(".png", "_masked.png")
@@ -494,6 +521,16 @@ class ScreenshotMixin:
                 
                 img.save(masked_image_path)
                 timing['total_time'] = time.time() - total_start
+                log_debug_event(
+                    "privacy_screenshot_mask_completed",
+                    image_path=image_path,
+                    masked_image_path=masked_image_path,
+                    ocr_items=len(ocr_data),
+                    segment_count=len(segments),
+                    token_count=len(aggregate_new_tokens),
+                    region_count=len(regions),
+                    timing=timing,
+                )
                 return (masked_image_path, aggregate_new_tokens), timing
             except Exception as exc:  # pragma: no cover - runtime safety
                 print(f"[PrivacyProtection] Failed to mask image with PIL: {exc}")
@@ -525,13 +562,38 @@ class ScreenshotMixin:
 
                             img.save(filename=masked_image_path)
                             timing['total_time'] = time.time() - total_start
+                            log_debug_event(
+                                "privacy_screenshot_mask_completed",
+                                image_path=image_path,
+                                masked_image_path=masked_image_path,
+                                backend="wand_fallback",
+                                ocr_items=len(ocr_data),
+                                segment_count=len(segments),
+                                token_count=len(aggregate_new_tokens),
+                                region_count=len(regions),
+                                timing=timing,
+                            )
                             return (masked_image_path, aggregate_new_tokens), timing
                     except Exception as exc2:  # pragma: no cover - runtime safety
                         print(f"[PrivacyProtection] Failed to mask image with Wand: {exc2}")
                         timing['total_time'] = time.time() - total_start
+                        log_debug_event(
+                            "privacy_screenshot_mask_failed",
+                            image_path=image_path,
+                            stage="wand_fallback",
+                            error=str(exc2),
+                            timing=timing,
+                        )
                         return (image_path, aggregate_new_tokens), timing
                 else:
                     timing['total_time'] = time.time() - total_start
+                    log_debug_event(
+                        "privacy_screenshot_mask_failed",
+                        image_path=image_path,
+                        stage="pil",
+                        error=str(exc),
+                        timing=timing,
+                    )
                     return (image_path, aggregate_new_tokens), timing
         elif Image is not None and Drawing is not None and Color is not None:
             try:
@@ -561,12 +623,37 @@ class ScreenshotMixin:
 
                     img.save(filename=masked_image_path)
                     timing['total_time'] = time.time() - total_start
+                    log_debug_event(
+                        "privacy_screenshot_mask_completed",
+                        image_path=image_path,
+                        masked_image_path=masked_image_path,
+                        backend="wand",
+                        ocr_items=len(ocr_data),
+                        segment_count=len(segments),
+                        token_count=len(aggregate_new_tokens),
+                        region_count=len(regions),
+                        timing=timing,
+                    )
                     return (masked_image_path, aggregate_new_tokens), timing
             except Exception as exc:  # pragma: no cover - runtime safety
                 print(f"[PrivacyProtection] Failed to mask image: {exc}")
                 timing['total_time'] = time.time() - total_start
+                log_debug_event(
+                    "privacy_screenshot_mask_failed",
+                    image_path=image_path,
+                    stage="wand",
+                    error=str(exc),
+                    timing=timing,
+                )
                 return (image_path, aggregate_new_tokens), timing
         else:
             print("[PrivacyProtection] Neither PIL nor Wand is available for image masking.")
             timing['total_time'] = time.time() - total_start
+            log_debug_event(
+                "privacy_screenshot_mask_failed",
+                image_path=image_path,
+                stage="render",
+                error="Neither PIL nor Wand is available for image masking.",
+                timing=timing,
+            )
             return (image_path, aggregate_new_tokens), timing

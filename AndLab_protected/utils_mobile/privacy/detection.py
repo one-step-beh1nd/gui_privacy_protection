@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+from utils_mobile.debug_logger import log_debug_event
 from .constants import GLINER_PII_LABELS, _XML_EXEMPT_KEYWORDS
 from .string_utils import _normalize_string, _fuzzy_match, levenshtein_distance
 
@@ -18,6 +20,10 @@ try:
     from gliner import GLiNER
 except Exception:  # pragma: no cover - optional dependency
     GLiNER = None  # type: ignore
+
+_gliner_model_lock = threading.Lock()
+_gliner_model_cache: Optional[Any] = None
+_gliner_model_name: Optional[str] = None
 
 
 class DetectionMixin:
@@ -38,22 +44,42 @@ class DetectionMixin:
     # ------------------------------------------------------------------ #
     def _ensure_gliner(self):
         """Lazy init of GLiNER model for PII detection."""
+        global _gliner_model_cache, _gliner_model_name
         if self._analyzer or not self.enabled:
             return
         if GLiNER is None:
+            log_debug_event("gliner_unavailable", reason="module_import_failed")
             print(
                 "[PrivacyProtection] GLiNER is not available. "
                 "Falling back to regex-based detection."
             )
             return
-        try:
-            os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-            model_name = "knowledgator/gliner-pii-large-v1.0"
-            self._analyzer = GLiNER.from_pretrained(model_name)
-            print(f"[PrivacyProtection] GLiNER model loaded: {model_name}")
-        except Exception as exc:  # pragma: no cover - runtime safety
-            print(f"[PrivacyProtection] Failed to init GLiNER model: {exc}")
-            self._analyzer = None
+        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+        os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+        model_name = "knowledgator/gliner-pii-large-v1.0"
+
+        if _gliner_model_cache is not None and _gliner_model_name == model_name:
+            self._analyzer = _gliner_model_cache
+            log_debug_event("gliner_load_reused", model_name=model_name, source="cache")
+            return
+
+        with _gliner_model_lock:
+            if _gliner_model_cache is not None and _gliner_model_name == model_name:
+                self._analyzer = _gliner_model_cache
+                log_debug_event("gliner_load_reused", model_name=model_name, source="post_lock_cache")
+                return
+            try:
+                log_debug_event("gliner_load_started", model_name=model_name)
+                model = GLiNER.from_pretrained(model_name)
+                _gliner_model_cache = model
+                _gliner_model_name = model_name
+                self._analyzer = model
+                log_debug_event("gliner_load_completed", model_name=model_name)
+                print(f"[PrivacyProtection] GLiNER model loaded: {model_name}")
+            except Exception as exc:  # pragma: no cover - runtime safety
+                log_debug_event("gliner_load_failed", error=str(exc))
+                print(f"[PrivacyProtection] Failed to init GLiNER model: {exc}")
+                self._analyzer = None
 
     # ------------------------------------------------------------------ #
     # Detection helpers

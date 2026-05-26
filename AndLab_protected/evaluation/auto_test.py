@@ -13,6 +13,7 @@ from page_executor.simple_vision_executor import VisionExecutor
 from recorder import JSONRecorder
 from templates import *
 from templates.packages import find_package
+from utils_mobile.debug_logger import clear_debug_log_dir, log_debug_event, set_debug_log_dir
 from utils_mobile.privacy_protection import create_privacy_layer, get_privacy_layer, set_privacy_layer
 
 
@@ -162,9 +163,35 @@ class Docker_Instance(Instance):
         self.container_id = container_id
         time.sleep(3)
 
+        stagger_seconds = max(0.0, float(getattr(config, "docker_start_stagger_sec", 0.0) or 0.0))
+        parallel_workers = max(1, int(getattr(config, "parallel_workers", 1) or 1))
+        if parallel_workers > 1 and stagger_seconds > 0:
+            stagger_delay = self.idx * stagger_seconds
+            if stagger_delay > 0:
+                log_debug_event(
+                    "docker_start_stagger_wait",
+                    instance_idx=self.idx,
+                    delay_sec=stagger_delay,
+                    parallel_workers=parallel_workers,
+                )
+                time.sleep(stagger_delay)
+
         avd_name = config.avd_name
-        result = start_avd(self.docker_port_local, avd_name)
+        result = start_avd(
+            self.docker_port_local,
+            avd_name,
+            timeout=int(getattr(config, "avd_start_timeout", 300) or 300),
+            max_attempts=int(getattr(config, "avd_start_max_attempts", 10) or 10),
+            retry_interval=float(getattr(config, "avd_start_retry_interval", 3) or 3),
+        )
         device = result.get("device")
+        log_debug_event(
+            "docker_avd_start_result",
+            local_port=self.docker_port_local,
+            avd_name=avd_name,
+            result=result,
+            device=device,
+        )
         print("Device name: ", device)
         print("AVD name: ", avd_name)
 
@@ -177,6 +204,11 @@ class Docker_Instance(Instance):
 
     def stop_single_task(self):
         print_with_color("Stopping Android Emulator in docker...", "blue")
+        log_debug_event(
+            "docker_stop_container_started",
+            container_id=self.container_id,
+            local_port=self.docker_port_local,
+        )
         remove_docker_container(self.container_id)
         # Release the port when container is stopped
         if self.docker_port_local is not None:
@@ -184,6 +216,11 @@ class Docker_Instance(Instance):
             release_port(self.docker_port_local)
         #stop_avd(self.docker_port_local, self.config.avd_name)
         print_with_color("Emulator stopped successfully", "blue")
+        log_debug_event(
+            "docker_stop_container_completed",
+            container_id=self.container_id,
+            local_port=self.docker_port_local,
+        )
 
     def __del__(self):
         try:
@@ -219,18 +256,35 @@ class AutoTest():
         self.config.trace_dir = os.path.join(self.config.task_dir, 'traces')
         self.config.screenshot_dir = os.path.join(self.config.task_dir, 'Screen')
         self.config.xml_dir = os.path.join(self.config.task_dir, 'xml')
+        self.config.debug_dir = os.path.join(self.config.task_dir, 'debug')
         if not os.path.exists(self.config.task_dir):
             os.mkdir(self.config.task_dir)
         os.makedirs(self.config.trace_dir, exist_ok=True)
         os.makedirs(self.config.screenshot_dir, exist_ok=True)
         os.makedirs(self.config.xml_dir, exist_ok=True)
+        os.makedirs(self.config.debug_dir, exist_ok=True)
 
     def start_emulator(self, instance):
+        start_ts = time.time()
+        log_debug_event(
+            "emulator_start_requested",
+            docker=self.config.docker,
+            avd_name=self.config.avd_name,
+            instance_idx=getattr(instance, "idx", None),
+        )
         if self.config.docker:
             type = "docker"
         else:
             type = "cmd"
-        device = instance.initialize_single_task(self.config)
+        try:
+            device = instance.initialize_single_task(self.config)
+        except Exception as exc:
+            log_debug_event(
+                "emulator_start_failed",
+                error=str(exc),
+                elapsed_sec=round(time.time() - start_ts, 3),
+            )
+            raise
 
         self.controller = AndroidController(device, type, instance)
         self.controller.run_command("adb root")
@@ -244,6 +298,12 @@ class AutoTest():
         if self.config.mode == "in_app":
             self.controller.launch_app(find_package(self.app))
             time.sleep(15)
+        log_debug_event(
+            "emulator_start_completed",
+            device=device,
+            controller_type=type,
+            elapsed_sec=round(time.time() - start_ts, 3),
+        )
 
     def _remove_task_dir_for_retry(self, task_folder_name):
         save_dir = os.path.abspath(self.config.save_dir)
@@ -276,7 +336,17 @@ class AutoTest():
         max_attempts = max(1, int(self.config.abort_max_attempts))
         last_result = None
         for attempt in range(max_attempts):
-            last_result = self._run_task_once(task_dict, instance)
+            try:
+                last_result = self._run_task_once(task_dict, instance)
+            except Exception as exc:
+                log_debug_event(
+                    "task_run_crashed",
+                    task_id=task_id,
+                    attempt=attempt + 1,
+                    error=str(exc),
+                )
+                clear_debug_log_dir()
+                raise
             if last_result["status"] != "abort":
                 return last_result
             if attempt < max_attempts - 1:
@@ -296,27 +366,71 @@ class AutoTest():
         self.config.task_name = task_id + "_" + datetime.datetime.fromtimestamp(demo_timestamp).strftime(
             "%Y-%m-%d_%H-%M-%S")
         # print(f"{task_id} running in {instance.container_id}")
+        self.prepare_for_task()
+        set_debug_log_dir(
+            self.config.debug_dir,
+            {
+                "task_id": task_id,
+                "task_name": self.config.task_name,
+                "privacy_method": getattr(self.config.privacy, "method", "none"),
+            },
+        )
+        log_debug_event(
+            "task_run_started",
+            task_id=task_id,
+            task_name=self.config.task_name,
+            app=task_dict.get("app"),
+            docker=self.config.docker,
+            mode=self.config.mode,
+        )
 
-        set_privacy_layer(create_privacy_layer(self.config.privacy))
+        privacy_init_ts = time.time()
+        try:
+            set_privacy_layer(create_privacy_layer(self.config.privacy))
+            log_debug_event(
+                "privacy_layer_created",
+                method=getattr(self.config.privacy, "method", "none"),
+                elapsed_sec=round(time.time() - privacy_init_ts, 3),
+            )
+        except Exception as exc:
+            log_debug_event(
+                "privacy_layer_create_failed",
+                method=getattr(self.config.privacy, "method", "none"),
+                error=str(exc),
+                elapsed_sec=round(time.time() - privacy_init_ts, 3),
+            )
+            raise
 
         # 保存原始任务指令与匿名后的指令
         self.original_instruction = task_dict['task_instruction']
         self.instruction = self.original_instruction
         privacy_layer = get_privacy_layer()
         try:
+            prepare_instruction_ts = time.time()
             runtime_instruction, _ = privacy_layer.prepare_instruction(self.original_instruction)
             self.instruction = runtime_instruction
+            log_debug_event(
+                "privacy_instruction_prepared",
+                original_len=len(self.original_instruction),
+                runtime_len=len(self.instruction),
+                elapsed_sec=round(time.time() - prepare_instruction_ts, 3),
+            )
         except Exception as exc:
             print_with_color(f"[PrivacyProtection] instruction preparation failed: {exc}", "red")
+            log_debug_event("privacy_instruction_prepare_failed", error=str(exc))
 
         self.app = task_dict['app']
         if not self.config.sample:
             self.command_per_step = task_dict['command_per_step']
         else:
             self.command_per_step = None
-        self.prepare_for_task()
         self.start_emulator(instance)
         self.llm_agent = self.build_task_agent(task_dict)
+        log_debug_event(
+            "task_agent_built",
+            agent_name=getattr(self.llm_agent, "name", type(self.llm_agent).__name__),
+            model_name=getattr(self.llm_agent, "model_name", None),
+        )
 
         print_with_color(self.instruction, "green")
         round_count = 0
@@ -335,12 +449,14 @@ class AutoTest():
             page_executor=self.page_executor,
             config=self.config,
         )
+        log_debug_event("task_recorder_initialized", debug_dir=self.config.debug_dir)
         task_agent = self.get_agent()
         aborted = False
         while round_count < self.config.max_rounds:
             try:
                 round_count += 1
                 print_with_color(f"Round {round_count}", "yellow")
+                log_debug_event("round_started", round=round_count)
                 task_agent.run_step(round_count)
                 print_with_color("Thinking about what to do in the next step...", "yellow")
                 time.sleep(self.config.request_interval)
@@ -349,11 +465,13 @@ class AutoTest():
                     print_with_color(f"Completed successfully.", "yellow")
                     task_agent.page_executor.update_screenshot(prefix="end")
                     task_complete = True
+                    log_debug_event("task_finish_flag_detected", round=round_count)
                     break
             except Exception as e:
                 import traceback
                 print(traceback.print_exc())
                 print_with_color(f"Error: {e}", "red")
+                log_debug_event("round_failed", round=round_count, error=str(e))
                 record = getattr(self, "record", None)
                 if record is not None and len(record.contents) > 0:
                     last = record.contents[-1]
@@ -366,8 +484,10 @@ class AutoTest():
         if privacy_layer.should_collect_stats():
             try:
                 privacy_layer.save_stats()
+                log_debug_event("privacy_stats_saved")
             except Exception as e:
                 print_with_color(f"[PrivacyProtection] Failed to save statistics: {e}", "red")
+                log_debug_event("privacy_stats_save_failed", error=str(e))
         
         instance.stop_single_task()
         if task_complete:
@@ -390,10 +510,18 @@ class AutoTest():
             "task_folder": self.config.task_name,
             "status": status,
         }
+        log_debug_event(
+            "task_run_finished",
+            task_id=task_id,
+            task_folder=self.config.task_name,
+            status=status,
+            rounds=round_count,
+        )
         if status == "abort":
             result["last_agent_raw_output"] = getattr(
                 self.record, "last_llm_raw_response", None
             )
+        clear_debug_log_dir()
         return result
 
     def get_agent(self):
