@@ -16,7 +16,7 @@ class Config:
     beta = 1.0
 
     # Surrogate VQA model for evaluation
-    surrogate_model_name = "ByteDance-Seed/UI-TARS-7B-SFT"
+    surrogate_model_name = "Qwen/Qwen2.5-VL-7B-Instruct"
     checkpoint_dir = "./checkpoints"
     save_interval = 60
 

@@ -2,6 +2,9 @@
 
 This directory contains the full pipeline for processing the **PrivScreen** dataset with **PrivacyProtectionLayer** and evaluating the results, so others can reproduce the experiment.
 
+> [!WARNING]
+> **Model serving backend affects evaluation metrics.** Based on user feedback, we have observed that serving the VQA model (e.g. Qwen2.5-VL-7B) with **vLLM** can yield evaluation metrics that are noticeably lower than serving the **same** model with Hugging Face **Transformers**. This appears to stem from differences in default generation settings, image preprocessing, and numerical behavior between the two backends rather than from the evaluation logic itself. To reproduce our reported numbers, we recommend deploying the model with Transformers. If you must use vLLM, treat the resulting metrics as not directly comparable to Transformers-based runs, and align generation/preprocessing settings as closely as possible before drawing conclusions.
+
 ## Workflow overview
 
 1. **Download dataset**: Download PrivScreen from HuggingFace.

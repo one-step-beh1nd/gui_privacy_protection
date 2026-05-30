@@ -594,7 +594,7 @@ class OriginalEvaluator:
                     if not isinstance(s, str):
                         s = str(s)
                     s = s.lower().strip()
-                    s = s.replace('"', '"').replace('"', '"').replace('\'', "'")
+                    s = s.replace('“', '"').replace('”', '"').replace('’', "'")
                     trans = str.maketrans({ch: ' ' for ch in string.punctuation})
                     s = s.translate(trans)
                     s = ' '.join(s.split())
@@ -616,7 +616,7 @@ class OriginalEvaluator:
                 
                 def _extract_bilingual_candidates(truth: str):
                     cands = []
-                    cands += re.findall(r'"([^"]+)"', truth)
+                    cands += re.findall(r'“([^”]+)”', truth)
                     cands += re.findall(r'"([^"]+)"', truth)
                     cands += re.findall(r'\(([^)]+)\)', truth)
                     if '(' in truth:
