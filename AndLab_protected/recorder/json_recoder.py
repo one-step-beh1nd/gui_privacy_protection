@@ -1,8 +1,10 @@
 import json
 import os
+import time
 
 import jsonlines
 
+from utils_mobile.debug_logger import log_debug_event
 from utils_mobile.utils import draw_bbox_multi
 from utils_mobile.xml_tool import UIXMLTree
 from utils_mobile.privacy_protection import get_privacy_layer
@@ -122,22 +124,51 @@ class JSONRecorder:
     def update_before(self, controller, prompt="** XML **", need_screenshot=False, ac_status=False, need_labeled=False):
         self.last_llm_raw_response = None
         privacy_layer = get_privacy_layer()
+        update_start = time.time()
+        log_debug_event(
+            "recorder_update_before_started",
+            turn=self.turn_number,
+            need_screenshot=need_screenshot,
+            ac_status=ac_status,
+            need_labeled=need_labeled,
+            privacy_method=getattr(privacy_layer, "method_name", "none"),
+        )
 
         if need_screenshot:
+            screenshot_start = time.time()
             self.page_executor.update_screenshot(prefix=str(self.turn_number), suffix="before")
+            log_debug_event(
+                "screenshot_captured",
+                turn=self.turn_number,
+                image_path=self.page_executor.current_screenshot,
+                elapsed_sec=round(time.time() - screenshot_start, 3),
+            )
             try:
+                privacy_screenshot_start = time.time()
                 processed_image_path, _ = privacy_layer.process_screenshot(
                     self.page_executor.current_screenshot
                 )
                 if processed_image_path:
                     self.page_executor.current_screenshot = processed_image_path
+                log_debug_event(
+                    "privacy_screenshot_processed",
+                    turn=self.turn_number,
+                    image_path=self.page_executor.current_screenshot,
+                    elapsed_sec=round(time.time() - privacy_screenshot_start, 3),
+                )
             except Exception as e:
                 print(f"Warning: Failed to apply privacy processing to screenshot: {e}")
+                log_debug_event(
+                    "privacy_screenshot_process_failed",
+                    turn=self.turn_number,
+                    error=str(e),
+                )
         
         xml_path = None
         ac_xml_path = None
 
         if not ac_status:
+            xml_fetch_start = time.time()
             xml_status = controller.get_xml(prefix=str(self.turn_number), save_dir=self.xml_file_path)
             if "ERROR" in xml_status:
                 xml_path = "ERROR"
@@ -152,7 +183,15 @@ class JSONRecorder:
                 xml_path = os.path.join(self.xml_file_path, str(self.turn_number) + '.xml')
                 # Note: Privacy protection is applied to compressed XML in get_latest_xml(),
                 # not to the original XML file which is kept for record-keeping purposes.
+            log_debug_event(
+                "xml_fetch_completed",
+                turn=self.turn_number,
+                xml_path=xml_path,
+                ac_xml_path=ac_xml_path,
+                elapsed_sec=round(time.time() - xml_fetch_start, 3),
+            )
         else:
+            ac_xml_fetch_start = time.time()
             xml_status = controller.get_ac_xml(prefix=str(self.turn_number), save_dir=self.xml_file_path)
             if "ERROR" in xml_status:
                 ac_xml_path = "ERROR"
@@ -167,6 +206,13 @@ class JSONRecorder:
                 ac_xml_path = xml_status
                 # Note: Privacy protection is applied to compressed XML in get_latest_xml(),
                 # not to the original XML file which is kept for record-keeping purposes.
+            log_debug_event(
+                "ac_xml_fetch_completed",
+                turn=self.turn_number,
+                xml_path=xml_path,
+                ac_xml_path=ac_xml_path,
+                elapsed_sec=round(time.time() - ac_xml_fetch_start, 3),
+            )
 
         step = {
             "trace_id": self.id,
@@ -216,13 +262,34 @@ class JSONRecorder:
                                 self.page_executor.elem_list)
                 self.labeled_current_screenshot_path = self.page_executor.current_screenshot.replace(".png", "_labeled.png")
                 step["labeled_image"] = self.labeled_current_screenshot_path
+                log_debug_event(
+                    "screenshot_labeled",
+                    turn=self.turn_number,
+                    labeled_image=self.labeled_current_screenshot_path,
+                    element_count=len(self.page_executor.elem_list),
+                )
             else:
                 # 如果没有可用的元素列表，使用原始截图
                 self.labeled_current_screenshot_path = self.page_executor.current_screenshot
                 step["labeled_image"] = self.labeled_current_screenshot_path
                 print("Warning: No elements found for labeling, using original screenshot")
+                log_debug_event(
+                    "screenshot_label_skipped",
+                    turn=self.turn_number,
+                    reason="no_elements_found",
+                    image_path=self.labeled_current_screenshot_path,
+                )
 
         self.contents.append(step)
+        log_debug_event(
+            "recorder_update_before_completed",
+            turn=self.turn_number,
+            elapsed_sec=round(time.time() - update_start, 3),
+            image_path=step.get("image"),
+            labeled_image=step.get("labeled_image"),
+            xml_path=step.get("xml"),
+            ac_xml_path=step.get("ac_xml"),
+        )
 
     def dectect_auto_stop(self):
         if len(self.contents) <= 5:
@@ -247,10 +314,12 @@ class JSONRecorder:
         
         # If xml_path is None or "ERROR", return a clear error message instead of None
         if xml_path is None or xml_path == "ERROR":
+            log_debug_event("xml_compress_skipped", turn=self.turn_number, reason="xml_missing")
             return "[XML fetch failed: Unable to retrieve UI hierarchy. Element-based operations (tap, long_press, swipe) are not available. Please use coordinate-based operations or wait and retry.]"
         
         xml_compressed = get_compressed_xml(xml_path, version=self.xml_compressed_version)
         if xml_compressed is None:
+            log_debug_event("xml_compress_failed", turn=self.turn_number, xml_path=xml_path)
             return "[XML compress failed: Unable to parse UI hierarchy into compressed text. Element-based operations may be unavailable. Please use screenshot cues or retry.]"
         
         privacy_layer = get_privacy_layer()
@@ -263,6 +332,7 @@ class JSONRecorder:
                     print(f"[PrivacyProtection] XML anonymization: {len(new_tokens)} new tokens created")
             except Exception as e:
                 print(f"Warning: Failed to apply privacy processing to compressed XML: {e}")
+                log_debug_event("privacy_xml_process_failed", turn=self.turn_number, error=str(e), xml_path=xml_path)
         
         with open(
             os.path.join(self.xml_file_path, f"{self.turn_number}_compressed_xml.txt"),
@@ -271,6 +341,12 @@ class JSONRecorder:
         ) as f:
             f.write(xml_compressed)
         self.page_executor.latest_xml = xml_compressed
+        log_debug_event(
+            "xml_compress_completed",
+            turn=self.turn_number,
+            xml_path=xml_path,
+            compressed_chars=len(xml_compressed),
+        )
         return xml_compressed
 
     def get_latest_xml_tree(self):
@@ -378,8 +454,22 @@ class JSONRecorder:
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(messages, f, ensure_ascii=False, indent=2)
+            log_debug_event(
+                "cloud_prompt_saved",
+                turn=turn_number,
+                stage=stage,
+                message_count=len(messages),
+                filepath=filepath,
+            )
         except Exception as e:
             print(f"Warning: Failed to save prompt to {filepath}: {e}")
+            log_debug_event(
+                "cloud_prompt_save_failed",
+                turn=turn_number,
+                stage=stage,
+                filepath=filepath,
+                error=str(e),
+            )
 
     def save_prompt_on_abort(self, messages_to_send, assistant_rsp=None, turn_number=None, stage=None):
         """

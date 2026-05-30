@@ -3,6 +3,7 @@ import subprocess
 import time
 
 import requests
+from utils_mobile.debug_logger import log_debug_event
 
 
 def run_docker_command(command):
@@ -13,6 +14,12 @@ def run_docker_command(command):
 
 def create_docker_container(docker_image_name, docker_port, docker_local_port):
     command = f"docker run -itd --privileged  -p {docker_local_port}:{docker_port} {docker_image_name}"
+    log_debug_event(
+        "docker_create_container_started",
+        image_name=docker_image_name,
+        docker_port=docker_port,
+        local_port=docker_local_port,
+    )
     returncode, stdout, stderr = run_docker_command(command)
     time.sleep(10)
     if returncode == 0:
@@ -20,9 +27,16 @@ def create_docker_container(docker_image_name, docker_port, docker_local_port):
         # TODO: add to final docker
         command = f"docker cp adb_client.py {container_id}:/"
         returncode, stdout, stderr = run_docker_command(command)
+        log_debug_event("docker_create_container_completed", container_id=container_id)
         return container_id
     else:
         print(returncode, stdout, stderr)
+        log_debug_event(
+            "docker_create_container_failed",
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
         raise Exception(f"Error creating container: {stderr}")
 
 
@@ -30,9 +44,22 @@ def execute_command_in_container(container_id, command):
     full_command = f"docker exec -d {container_id} /bin/bash -c \"{command}\""
     returncode, stdout, stderr = run_docker_command(full_command)
     if returncode == 0:
+        log_debug_event(
+            "docker_exec_completed",
+            container_id=container_id,
+            command=command,
+        )
         return stdout
     else:
         print(returncode, stdout, stderr)
+        log_debug_event(
+            "docker_exec_failed",
+            container_id=container_id,
+            command=command,
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
         raise Exception(f"Error executing command: {stderr}")
 
 
@@ -43,8 +70,16 @@ def remove_docker_container(container_id):
     run_docker_command(stop_command)
     returncode, stdout, stderr = run_docker_command(remove_command)
     if returncode == 0:
+        log_debug_event("docker_remove_container_completed", container_id=container_id)
         return f"Container {container_id} has been removed."
     else:
+        log_debug_event(
+            "docker_remove_container_failed",
+            container_id=container_id,
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
         raise Exception(f"Error removing container: {stderr}")
 
 
@@ -69,27 +104,64 @@ def cp_docker(local_path, docker_path, container_id, local_to_docker=True):
 
 def send_post_request(url, headers, data, max_attempts=10, retry_interval=3, timeout=120):
     attempts = 0
+    request_start = time.time()
     while attempts < max_attempts:
         try:
+            log_debug_event(
+                "docker_http_request_attempt",
+                url=url,
+                attempt=attempts + 1,
+                timeout=timeout,
+                data=data,
+            )
             response = requests.post(url, headers=headers, data=json.dumps(data), timeout=timeout)
-            return response.json()
+            payload = response.json()
+            log_debug_event(
+                "docker_http_request_completed",
+                url=url,
+                attempt=attempts + 1,
+                status_code=response.status_code,
+                elapsed_sec=round(time.time() - request_start, 3),
+                response=payload,
+            )
+            return payload
         except Exception as e:
             print(f"Error occurred: {e}")
             attempts += 1
+            log_debug_event(
+                "docker_http_request_failed",
+                url=url,
+                attempt=attempts,
+                error=str(e),
+                elapsed_sec=round(time.time() - request_start, 3),
+            )
             if attempts < max_attempts:
                 print(f"Timeout occurred. Retrying... Attempt {attempts}/{max_attempts}")
                 print(data)
                 time.sleep(retry_interval)
             else:
+                log_debug_event(
+                    "docker_http_request_giveup",
+                    url=url,
+                    attempts=attempts,
+                    elapsed_sec=round(time.time() - request_start, 3),
+                )
                 return {'error': f'Timeout occurred after {max_attempts} attempts'}
 
 
-def start_avd(port, avd_name):
+def start_avd(port, avd_name, timeout=300, max_attempts=10, retry_interval=3):
     print(f"Starting AVD: {avd_name}")
     url = f'http://localhost:{port}/start'
     headers = {'Content-Type': 'application/json'}
     data = {'avd_name': avd_name}
-    return send_post_request(url, headers, data)
+    return send_post_request(
+        url,
+        headers,
+        data,
+        max_attempts=max_attempts,
+        retry_interval=retry_interval,
+        timeout=timeout,
+    )
 
 
 def execute_adb_command(port, command):

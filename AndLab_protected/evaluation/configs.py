@@ -127,15 +127,20 @@ class TaskConfig:
     save_dir: str
     max_rounds: int
     abort_max_attempts: int = 3
+    parallel_workers: int = 1
     mode: Optional[float] = None
     request_interval: Optional[float] = None
     task_id: Optional[str] = None
     avd_name: Optional[str] = None
     avd_log_dir: Optional[str] = None
     avd_base: Optional[str] = None
+    avd_start_timeout: int = 300
+    avd_start_max_attempts: int = 10
+    avd_start_retry_interval: float = 3
     android_sdk_path: Optional[str] = None
     is_relative_bbox: Optional[bool] = False
     docker: Optional[bool] = False
+    docker_start_stagger_sec: float = 15.0
     docker_args: Optional[dict] = None
     sample: Optional[bool] = False
     show_avd: Optional[bool] = False
